@@ -51,6 +51,11 @@ after `-STA`.
 
 As you type, the dialog shows the file name it will save to.
 
+If the clipboard gets an image with exactly the same pixels as the last one
+you saved or skipped, the dialog doesn't open again. The Snipping Tool, for
+example, copies the capture a second time when you close its window. To save
+the same image twice, take a new screenshot.
+
 ## Parameters
 
 | Parameter | Default | Description |
