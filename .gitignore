@@ -1,0 +1,9 @@
+# Default output folder when the script is run from the repo root.
+# Screenshots are evidence for engagements and must never be committed.
+evidence/
+*.png
+
+# Editor / OS noise
+.vscode/
+Thumbs.db
+desktop.ini
