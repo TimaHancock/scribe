@@ -6,14 +6,15 @@ writeup should be assembled from the log instead of from memory.
 
 ## Where things stand
 
-The four tools (`Save-Screenshot.ps1`, `Start-LogBox.ps1`, `New-Project.ps1`,
-`ProjectLog.psm1`) each remove a real piece of friction, and they share one
-source of truth: the active project in `%APPDATA%\ProjectLog\active-project.txt`.
+When this roadmap was written, the four tools (`Save-Screenshot.ps1`,
+`Start-LogBox.ps1`, `New-Project.ps1`, `ProjectLog.psm1`) each removed a real
+piece of friction, and they shared one source of truth: the active project in
+`%APPDATA%\ProjectLog\active-project.txt`.
 
 Gaps:
 
-- They are four separate tools you have to remember to start, and the
-  screenshot watcher needs a console window left open.
+- They were four separate tools you had to remember to start, and the
+  screenshot watcher needed a console window left open. (Fixed in Phase 1.)
 - They cover the playbook's first two phases (Frame, Capture). Distill, Draft,
   Review and Publish are still done by hand.
 - The aligned plain-text log loses its alignment in Obsidian's reading view,
@@ -36,17 +37,20 @@ if the PowerShell ceiling is reached.
 
 ## Phase 1: One app, always running
 
-- One tray app (e.g. `Start-Scribe.ps1`) runs the hotkey, the log box and the
+- [x] One tray app, `Start-Scribe.ps1`, runs the hotkey, the log box and the
   clipboard watcher. No console windows, no Ctrl+C.
-- Event-driven clipboard watching with `AddClipboardFormatListener` instead of
-  the 400 ms polling loop.
-- Autostart with a Startup shortcut, created by an `Install-Scribe.ps1`.
-- A settings file (`%APPDATA%\ProjectLog\config.json`) for the vault root,
-  hotkeys, log format and recent projects.
-- Switching projects from a recent list in the tray menu and the log box,
-  instead of a folder picker every time.
-- One process writing to `log.md`, so entries from screenshots and the log box
-  can't get mixed together.
+- [x] Event-driven clipboard watching with `AddClipboardFormatListener` instead
+  of the 400 ms polling loop.
+- [x] Start Menu and Startup shortcuts, created by `Install-Scribe.ps1`.
+- [x] `%APPDATA%\ProjectLog\settings.json` for the hotkey, preview lines, extra
+  tags, screenshot watching and slug length, applied live when saved. The vault
+  root and log format arrive with Phase 2, which uses them. Recent projects are
+  app state, so they live in `recent-projects.txt` instead.
+- [x] Switching projects from a recent list in the tray menu and the log box
+  (Ctrl+P), instead of a folder picker every time.
+- [x] One process writing to `log.md`. `Save-Screenshot.ps1` stays as a console
+  option, and a shared lock stops it and Scribe both prompting for one
+  screenshot.
 
 ## Phase 2: Obsidian-native output
 

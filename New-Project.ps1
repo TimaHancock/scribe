@@ -17,7 +17,7 @@
       Capstone   one root, shared evidence, one folder per task
 
     Afterward it can make the new folder the active project, so
-    Start-LogBox.ps1 and Save-Screenshot.ps1 write into it.
+    Start-Scribe.ps1 and Save-Screenshot.ps1 write into it.
 
 .PARAMETER Slug
     Short project name, e.g. "proxy lab" or "net101 task 1". Turned into
@@ -58,13 +58,8 @@ Import-Module (Join-Path $PSScriptRoot 'ProjectLog.psm1') -Force
 $utf8 = New-Object Text.UTF8Encoding $false
 $today = Get-Date
 
-function Get-StatePath([string]$Name) {
-    $base = if ($env:APPDATA) { $env:APPDATA } else { Join-Path $HOME '.config' }
-    return Join-Path (Join-Path $base 'ProjectLog') $Name
-}
-
 function Select-ParentFolder {
-    $last = Get-StatePath 'last-parent.txt'
+    $last = Get-ProjectLogStatePath 'last-parent.txt'
     $start = if (Test-Path -LiteralPath $last) { (Get-Content -LiteralPath $last -Raw).Trim() } else { $null }
 
     $canPick = $IsWindows -ne $false -and [Threading.Thread]::CurrentThread.GetApartmentState() -eq 'STA'
@@ -294,7 +289,7 @@ if ($PSCmdlet.ShouldProcess($root, "Create $Module project")) {
         [IO.File]::WriteAllText($target, ($content -replace "`r?`n", [Environment]::NewLine), $utf8)
     }
 
-    $lastParent = Get-StatePath 'last-parent.txt'
+    $lastParent = Get-ProjectLogStatePath 'last-parent.txt'
     New-Item -ItemType Directory -Path (Split-Path -Parent $lastParent) -Force | Out-Null
     [IO.File]::WriteAllText($lastParent, (Split-Path -Parent $root), $utf8)
 

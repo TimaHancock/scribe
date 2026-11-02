@@ -11,6 +11,14 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '..\ProjectLog.psm1') -Force
     $script:nl = [Environment]::NewLine
     $script:tags = Get-KnownLogTags
+    # Keep the real active project, recent list and settings out of reach.
+    $script:savedConfig = $env:PROJECTLOG_CONFIG
+    $script:stateDir = Join-Path $TestDrive 'state'
+    $env:PROJECTLOG_CONFIG = Join-Path $stateDir 'active-project.txt'
+}
+
+AfterAll {
+    $env:PROJECTLOG_CONFIG = $script:savedConfig
 }
 
 Describe 'ConvertTo-Slug' {
@@ -45,6 +53,10 @@ Describe 'Get-KnownLogTags' {
         $t = Get-KnownLogTags -ExtraTags 'flag', 'try'
         $t | Should -Contain 'FLAG'
         @($t | Where-Object { $_ -eq 'TRY' }).Count | Should -Be 1
+    }
+    It 'accepts $null extra tags (an empty settings list unrolls to $null)' {
+        { Get-KnownLogTags -ExtraTags $null } | Should -Not -Throw
+        (Get-KnownLogTags -ExtraTags $null).Count | Should -Be $tags.Count
     }
 }
 
@@ -138,5 +150,186 @@ Describe 'Add-LogEntry' {
         Add-LogEntry -LogPath $log -Tag 'TRY' -Text 'One' | Out-Null
         $bytes = [IO.File]::ReadAllBytes($log)
         $bytes[0] | Should -Be ([byte][char]'#')
+    }
+}
+
+Describe 'Active and recent projects' {
+    BeforeEach {
+        Remove-Item -LiteralPath $stateDir -Recurse -Force -ErrorAction SilentlyContinue
+        $script:p = 1..12 | ForEach-Object { (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive "proj-$_")).FullName }
+    }
+
+    It 'has no active or recent project at first' {
+        Get-ActiveProject | Should -BeNullOrEmpty
+        @(Get-RecentProjects).Count | Should -Be 0
+    }
+    It 'puts the newest project first without duplicates' {
+        Set-ActiveProject $p[0] | Should -Be $p[0]
+        [void](Set-ActiveProject $p[1])
+        [void](Set-ActiveProject $p[0])
+        Get-ActiveProject | Should -Be $p[0]
+        Get-RecentProjects | Should -Be @($p[0], $p[1])
+    }
+    It 'matches folders case-insensitively' {
+        [void](Set-ActiveProject $p[0])
+        [void](Set-ActiveProject $p[1])
+        [void](Set-ActiveProject $p[0].ToUpperInvariant())
+        @(Get-RecentProjects).Count | Should -Be 2
+    }
+    It 'keeps the ten newest' {
+        foreach ($folder in $p) { [void](Set-ActiveProject $folder) }
+        $recent = Get-RecentProjects
+        $recent.Count | Should -Be 10
+        $recent[0] | Should -Be $p[11]
+        $recent | Should -Not -Contain $p[0]
+    }
+    It 'skips folders that no longer exist' {
+        [void](Set-ActiveProject $p[0])
+        [void](Set-ActiveProject $p[1])
+        Remove-Item -LiteralPath $p[0]
+        Get-RecentProjects | Should -Be @($p[1])
+    }
+    It 'includes an active project that predates the recent list' {
+        New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+        [IO.File]::WriteAllText($env:PROJECTLOG_CONFIG, $p[2])
+        Get-RecentProjects | Should -Be @($p[2])
+    }
+}
+
+Describe 'Get-ProjectLogSettings' {
+    BeforeEach {
+        Remove-Item -LiteralPath $stateDir -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+        $script:settingsPath = Join-Path $stateDir 'settings.json'
+    }
+
+    It 'uses the defaults when there is no file' {
+        $s = Get-ProjectLogSettings
+        $s.logHotkey | Should -Be 'Ctrl+Alt+L'
+        $s.previewLines | Should -Be 6
+        $s.watchClipboard | Should -BeTrue
+        @($s.Warnings).Count | Should -Be 0
+    }
+    It 'writes a default file that reads back with no warnings' {
+        Initialize-ProjectLogSettings | Should -Be $settingsPath
+        $s = Get-ProjectLogSettings
+        @($s.Warnings).Count | Should -Be 0
+        $s.maxSlugLength | Should -Be 50
+    }
+    It "doesn't overwrite an existing file" {
+        Set-Content -LiteralPath $settingsPath -Value '{ "previewLines": 3 }'
+        [void](Initialize-ProjectLogSettings)
+        (Get-ProjectLogSettings).previewLines | Should -Be 3
+    }
+    It 'reads values, with keys in any case' {
+        Set-Content -LiteralPath $settingsPath -Value '{ "LogHotkey": "Ctrl+Shift+F9", "previewLines": 0, "extraTags": ["FLAG", "LOOT"], "watchClipboard": false }'
+        $s = Get-ProjectLogSettings
+        $s.logHotkey | Should -Be 'Ctrl+Shift+F9'
+        $s.previewLines | Should -Be 0
+        $s.extraTags | Should -Be @('FLAG', 'LOOT')
+        $s.watchClipboard | Should -BeFalse
+        @($s.Warnings).Count | Should -Be 0
+    }
+    It 'warns about a bad value and keeps the default' {
+        Set-Content -LiteralPath $settingsPath -Value '{ "previewLines": 99, "watchClipboard": "yes", "extraTags": ["two words"] }'
+        $s = Get-ProjectLogSettings
+        $s.previewLines | Should -Be 6
+        $s.watchClipboard | Should -BeTrue
+        @($s.extraTags).Count | Should -Be 0
+        @($s.Warnings).Count | Should -Be 3
+        $s.Warnings[0] | Should -Match 'previewLines should be a whole number from 0 to 20'
+    }
+    It 'warns about an unknown setting' {
+        Set-Content -LiteralPath $settingsPath -Value '{ "logHotKeys": "Ctrl+Alt+K" }'
+        $s = Get-ProjectLogSettings
+        $s.logHotkey | Should -Be 'Ctrl+Alt+L'
+        $s.Warnings | Should -Match "unknown setting 'logHotKeys'"
+    }
+    It 'warns about broken JSON and uses the defaults' {
+        Set-Content -LiteralPath $settingsPath -Value '{ "previewLines": 3, }}'
+        $s = Get-ProjectLogSettings
+        $s.previewLines | Should -Be 6
+        $s.Warnings | Should -Match "isn't valid JSON"
+    }
+    It 'treats an empty file as no settings' {
+        Set-Content -LiteralPath $settingsPath -Value ''
+        @((Get-ProjectLogSettings).Warnings).Count | Should -Be 0
+    }
+}
+
+Describe 'Evidence files' {
+    BeforeAll { $script:when = [datetime]'2026-10-26 14:32' }
+
+    It 'names a file from the time and description' {
+        Get-EvidenceName -When $when -Description 'Proxy 502 error' | Should -Be '2026-10-26_1432_proxy-502-error'
+    }
+    It 'uses the default slug for an empty description' {
+        Get-EvidenceName -When $when -Description '  ' | Should -Be '2026-10-26_1432_screenshot'
+        Get-EvidenceName -When $when -DefaultSlug 'output' | Should -Be '2026-10-26_1432_output'
+    }
+    It 'adds -2, -3 rather than overwriting' {
+        $dir = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'shots')).FullName
+        $first = Get-UniquePath -Dir $dir -Base 'x'
+        $first | Should -Be (Join-Path $dir 'x.png')
+        New-Item -ItemType File -Path $first | Out-Null
+        $second = Get-UniquePath -Dir $dir -Base 'x'
+        $second | Should -Be (Join-Path $dir 'x-2.png')
+        New-Item -ItemType File -Path $second | Out-Null
+        Get-UniquePath -Dir $dir -Base 'x' | Should -Be (Join-Path $dir 'x-3.png')
+        Get-UniquePath -Dir $dir -Base 'x' -Extension 'txt' | Should -Be (Join-Path $dir 'x.txt')
+    }
+    It 'logs a file inside the project relative to the log' {
+        $root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'proof-in')).FullName
+        $log = Join-Path $root 'log.md'
+        [void](Add-ProofEntry -LogPath $log -Path (Join-Path $root 'evidence\screenshots\a.png') -When $when)
+        (Get-Content -LiteralPath $log)[1] | Should -Be '14:32 PROOF    evidence/screenshots/a.png'
+    }
+    It 'logs a file outside the project with its full path' {
+        $root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'proof-out')).FullName
+        $log = Join-Path $root 'log.md'
+        [void](Add-ProofEntry -LogPath $log -Path 'D:\elsewhere\a.png' -When $when)
+        (Get-Content -LiteralPath $log)[1] | Should -Be '14:32 PROOF    D:\elsewhere\a.png'
+    }
+}
+
+Describe 'Get-ImageHash' {
+    BeforeAll {
+        function New-TestBitmap([System.Drawing.Imaging.PixelFormat]$Format = 'Format32bppArgb') {
+            $bmp = New-Object System.Drawing.Bitmap 40, 30, $Format
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            $g.Clear([System.Drawing.Color]::White)
+            $g.Dispose()
+            return $bmp
+        }
+    }
+
+    It 'matches the same pixels stored in different formats' {
+        Get-ImageHash (New-TestBitmap) | Should -Be (Get-ImageHash (New-TestBitmap 'Format24bppRgb'))
+    }
+    It 'differs when one pixel differs' {
+        $b = New-TestBitmap
+        $b.SetPixel(5, 5, [System.Drawing.Color]::Red)
+        Get-ImageHash (New-TestBitmap) | Should -Not -Be (Get-ImageHash $b)
+    }
+}
+
+Describe 'Clipboard watch lock' {
+    BeforeAll { $script:module = (Resolve-Path (Join-Path $PSScriptRoot '..\ProjectLog.psm1')).ProviderPath }
+
+    It 'lets only one process watch at a time' {
+        $lock = Enter-ClipboardWatch
+        if (-not $lock) {
+            Set-ItResult -Skipped -Because 'another process holds the lock, probably a running Scribe; exit it to run this test'
+            return
+        }
+        try {
+            # Jobs run in a separate process, like a second watcher would.
+            $blocked = Start-Job { Import-Module $using:module; $null -eq (Enter-ClipboardWatch) } | Wait-Job | Receive-Job
+            $blocked | Should -BeTrue
+        }
+        finally { Exit-ClipboardWatch -Lock $lock }
+
+        $free = Start-Job { Import-Module $using:module; $l = Enter-ClipboardWatch; $null -ne $l; if ($l) { Exit-ClipboardWatch -Lock $l } } | Wait-Job | Receive-Job
+        $free | Should -BeTrue
     }
 }

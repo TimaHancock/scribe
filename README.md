@@ -7,17 +7,16 @@ per project, one running log (`log.md`) and one file-naming rule.
 
 | Tool | What it does |
 | --- | --- |
+| [Start-Scribe.ps1](#start-scribeps1) | A tray app: a hotkey log box for the running log, plus a screenshot watcher that saves and logs every capture |
+| [Install-Scribe.ps1](#install-scribeps1) | Adds Scribe to the Start Menu and starts it when you sign in |
 | [New-Project.ps1](#new-projectps1) | Creates a project folder in the playbook's layout and makes it the active project |
-| [Start-LogBox.ps1](#start-logboxps1) | A hotkey pop-up for adding tagged entries to the active project's `log.md` |
-| [Save-Screenshot.ps1](#save-screenshotps1) | Saves clipboard screenshots with timestamped names into the active project and logs a PROOF line |
-| `ProjectLog.psm1` | Shared module: the active project, the log format and file-name slugs |
+| [Save-Screenshot.ps1](#save-screenshotps1) | The console version of Scribe's screenshot watcher, for a one-off output folder |
+| `ProjectLog.psm1`, `ProjectLogUI.psm1` | Shared modules: active and recent projects, settings, the log format, file names, dialogs |
 
-All three scripts use the same **active project**, so a screenshot and a log
-entry made a minute apart land in the same place. Change it from the log box's
-tray menu, with `New-Project.ps1`, or with `Set-ActiveProject` after
-`Import-Module .\ProjectLog.psm1`. It is stored in
-`%APPDATA%\ProjectLog\active-project.txt` (override with the
-`PROJECTLOG_CONFIG` environment variable).
+Everything uses the same **active project**, so a screenshot and a log entry
+made a minute apart land in the same place. Switch it from Scribe's tray menu
+or log box, with `New-Project.ps1`, or with `Set-ActiveProject` after
+`Import-Module .\ProjectLog.psm1`.
 
 See [ROADMAP.md](ROADMAP.md) for where this is heading.
 
@@ -26,22 +25,153 @@ See [ROADMAP.md](ROADMAP.md) for where this is heading.
 - Windows 10 or 11
 - Windows PowerShell 5.1 (`powershell.exe`, built into Windows)
 
-There's nothing to install. If your execution policy blocks the scripts, add
-`-ExecutionPolicy Bypass` after `-STA` in the commands below.
+There's nothing to install beyond these files. If your execution policy blocks
+the scripts, add `-ExecutionPolicy Bypass` after `-STA` in the commands below.
 
-## Typical session
+## Getting started
 
 ```powershell
+# Once: add Scribe to the Start Menu and sign-in, and start it now
+powershell.exe -ExecutionPolicy Bypass -File .\Install-Scribe.ps1 -Start
+
 # Once per project
 powershell.exe -STA -File .\New-Project.ps1
-
-# Each work session (or put these in a Startup shortcut)
-powershell.exe -STA -WindowStyle Hidden -File .\Start-LogBox.ps1
-powershell.exe -STA -File .\Save-Screenshot.ps1
 ```
 
 Then work. Press **Ctrl+Alt+L** to log what you tried, saw or fixed, and take
-screenshots with any tool that copies to the clipboard.
+screenshots with any tool that copies to the clipboard (Win+Shift+S, PrtScn,
+ShareX, Greenshot).
+
+## Start-Scribe.ps1
+
+Runs in the background as a tray icon: a blue **S** while it watches for
+screenshots, grey while that's paused. Hover it to see the active project.
+
+### Log box
+
+Press the hotkey (default **Ctrl+Alt+L**) and a small box opens on the monitor
+your mouse is on, showing the last few log lines. Type a tag, then the entry:
+
+```
+TRY Pointed the reverse proxy at port 8080
+```
+
+| Key | Action |
+| --- | --- |
+| Enter | Save and close |
+| Shift+Enter | New line, for pasted output |
+| Ctrl+P | Open the project list |
+| Esc | Close without saving |
+
+The tags are listed under the entry box. Hover one to see when to use it and an
+example; click one to put it at the start of the entry, replacing a tag that's
+already there. Tags are matched case-insensitively, so `try` works.
+
+The **Project** list at the top holds your recent projects, newest first, and
+**Choose folder...** for any other folder. Switching there switches the active
+project everywhere.
+
+The time and the date heading are added for you, and a second entry in the
+same minute drops its time.
+
+### Screenshots
+
+When an image lands on the clipboard, a box shows a preview and the project it
+will go to, and asks for a short description. Press Enter and the image is
+saved in the project's `evidence\screenshots` as:
+
+```
+2026-10-16_0912_admin-panel-exposed-without-auth.png
+```
+
+and a PROOF line is added to the project's `log.md`. Esc skips the capture.
+As you type, the box shows the file name it will save to.
+
+If the clipboard gets an image with exactly the same pixels as the last one
+you saved or skipped, the box doesn't open again. The Snipping Tool, for
+example, copies the capture a second time when you close its window. To save
+the same image twice, take a new screenshot.
+
+To copy images without being asked about them, untick **Watch for
+screenshots** in the tray menu.
+
+### Tray menu
+
+| Item | Does |
+| --- | --- |
+| New log entry | Opens the log box (double-clicking the icon does too) |
+| Project | Recent projects, with the active one ticked, and Choose folder... |
+| Watch for screenshots | Pauses or resumes the screenshot watcher |
+| Open log / Open project folder | Opens the active project's `log.md` or its folder |
+| Edit settings | Opens `settings.json`, creating it with the defaults first |
+| Exit | Stops Scribe |
+
+Double-click the icon if a remote session or another app swallows the hotkey.
+
+### Parameters
+
+Parameters override `settings.json`.
+
+| Parameter | Description |
+| --- | --- |
+| `-Project` | Folder to make active before starting. |
+| `-Hotkey` | Log box hotkey, e.g. `Ctrl+Shift+F9`. Needs at least one modifier. |
+| `-ExtraTags` | Tags to accept in addition to the playbook's. |
+| `-PreviewLines` | Recent log lines shown in the box (0-20). |
+| `-NoScreenshots` | Start with the screenshot watcher paused. |
+
+Only one Scribe runs at a time. If you start it from a console, hide the
+console with `powershell.exe -STA -WindowStyle Hidden -File .\Start-Scribe.ps1`,
+not with `Start-Process -WindowStyle Hidden`: a process started hidden from
+outside also hides every dialog Scribe opens.
+
+## Settings
+
+`%APPDATA%\ProjectLog\settings.json`, opened from the tray menu's **Edit
+settings**. Scribe applies saved changes within about five seconds and shows a
+notification. A value it can't use is reported, and the default is used
+instead.
+
+```json
+{
+  "logHotkey": "Ctrl+Alt+L",
+  "previewLines": 6,
+  "extraTags": [],
+  "watchClipboard": true,
+  "maxSlugLength": 50
+}
+```
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `logHotkey` | `"Ctrl+Alt+L"` | Hotkey for the log box. |
+| `previewLines` | `6` | Recent log lines shown in the box (0-20). |
+| `extraTags` | `[]` | Extra single-word tags, such as `["FLAG", "LOOT"]`. |
+| `watchClipboard` | `true` | Whether Scribe starts watching for screenshots. Changing it while Scribe runs pauses or resumes the watcher. |
+| `maxSlugLength` | `50` | Longest description part of a file name (10-120). Save-Screenshot.ps1 uses it too. |
+
+The same folder holds the other state files: `active-project.txt`,
+`recent-projects.txt`, `last-parent.txt` (New-Project's last folder) and
+`scribe.log`, where Scribe records warnings and errors in case a notification
+was hidden. Set the `PROJECTLOG_CONFIG` environment variable to the path of an
+`active-project.txt` elsewhere to move all of them.
+
+## Install-Scribe.ps1
+
+Creates a **Scribe** shortcut in the Start Menu and in your Startup folder,
+both pointing at `Start-Scribe.ps1` in this folder. Run it again if you move
+the folder.
+
+| Parameter | Description |
+| --- | --- |
+| `-Start` | Start Scribe now as well. |
+| `-NoAutostart` | Only the Start Menu shortcut; removes the Startup one if present. |
+| `-Uninstall` | Remove both shortcuts. Exit a running Scribe from its tray menu. |
+| `-WhatIf` | Show what would change. |
+
+The shortcuts run Windows PowerShell 5.1 hidden with
+`-ExecutionPolicy Bypass` for this one script. The console may flash in the
+taskbar for a moment at sign-in.
 
 ## New-Project.ps1
 
@@ -72,75 +202,29 @@ Afterward it offers to make the new folder the active project.
 .\New-Project.ps1 -Slug "senior capstone" -Module Capstone -Tasks 3 -Path D:\Projects -SetActive
 ```
 
-## Start-LogBox.ps1
-
-Runs in the background with a tray icon. Press the hotkey (default
-**Ctrl+Alt+L**) and a small box opens on the monitor your mouse is on, showing
-the last few log lines. Type a tag, then the entry:
-
-```
-TRY Pointed the reverse proxy at port 8080
-```
-
-| Key | Action |
-| --- | --- |
-| Enter | Save and close |
-| Shift+Enter | New line, for pasted output |
-| Esc | Close without saving |
-
-The tags are listed under the entry box. Hover one to see when to use it and an
-example; click one to put it at the start of the entry, replacing a tag that's
-already there. Tags are matched case-insensitively, so `try` works.
-
-The time and the date heading are added for you, and a second entry in the
-same minute drops its time. The tray menu has **New entry**, **Set active
-project...**, **Open log** and **Exit**. If a remote session or another app
-swallows the hotkey, double-click the tray icon instead.
-
-| Parameter | Default | Description |
-| --- | --- | --- |
-| `-Project` | *(active project)* | Folder to make active before starting. |
-| `-Hotkey` | `Ctrl+Alt+L` | Global hotkey, e.g. `Ctrl+Shift+F9`. Needs at least one modifier. |
-| `-ExtraTags` | *(none)* | Tags to accept in addition to the playbook's. |
-| `-PreviewLines` | `6` | Recent log lines shown in the box (0-20). |
-
 ## Save-Screenshot.ps1
 
-Take a screenshot with any tool that copies to the clipboard (Win+Shift+S,
-PrtScn, ShareX, Greenshot). A small dialog pops up with a preview and asks for
-a short description. Press Enter and the image is saved as:
+The same screenshot box as Scribe, in a console window, for when you want to
+save to a specific folder or log. Press **Ctrl+C** in the console to stop.
 
+```powershell
+powershell.exe -STA -File .\Save-Screenshot.ps1 `
+    -OutputDir C:\Labs\2026-10-proxy\evidence\screenshots `
+    -LogPath   C:\Labs\2026-10-proxy\log.md
 ```
-2026-10-16_0912_admin-panel-exposed-without-auth.png
-```
 
-By default it saves into the active project's `evidence\screenshots` and
-appends a PROOF line to its `log.md`. With no active project it saves to
-`.\evidence\screenshots` and logs nothing. The active project is re-read on
-every capture, so switching projects needs no restart.
-
-Leave the console open while you work. Press **Ctrl+C** in the console to stop.
-
-| Key | Action |
-| --- | --- |
-| Enter | Save with the typed description |
-| Esc | Skip this capture (nothing is saved) |
-
-As you type, the dialog shows the file name it will save to.
-
-If the clipboard gets an image with exactly the same pixels as the last one
-you saved or skipped, the dialog doesn't open again. The Snipping Tool, for
-example, copies the capture a second time when you close its window. To save
-the same image twice, take a new screenshot.
+Only one of Scribe and Save-Screenshot.ps1 can watch the clipboard at a time,
+so you never get two prompts for one screenshot. Untick **Watch for
+screenshots** in Scribe's tray menu before starting this script.
 
 | Parameter | Default | Description |
 | --- | --- | --- |
-| `-OutputDir` | active project's `evidence\screenshots` | Folder to save into. Created if missing. Relative paths resolve from the current location. |
-| `-LogPath` | active project's `log.md` | Log file to append PROOF lines to. |
+| `-OutputDir` | active project's `evidence\screenshots` | Folder to save into. Created if missing. Relative paths resolve from the current location. With no active project: `.\evidence\screenshots`. |
+| `-LogPath` | active project's `log.md` | Log file to append PROOF lines to. With no active project, nothing is logged. |
 | `-NoLog` | off | Don't append PROOF lines, even when a project is active. |
-| `-MaxSlugLength` | `50` | Maximum length of the description part of the file name (10-120). |
+| `-MaxSlugLength` | `maxSlugLength` setting | Maximum length of the description part of the file name (10-120). |
 
-### How names are built
+## How names are built
 
 - **Timestamp:** the time the image landed on the clipboard, not the time you
   finished typing, in the format `yyyy-MM-dd_HHmm`.
@@ -188,10 +272,17 @@ powershell.exe -NoProfile -Command "Invoke-Pester .\tests"
 
 - **"needs a single-threaded apartment"**: launch with
   `powershell.exe -STA -File ...`.
-- **Nothing happens after a screenshot:** check that your tool copies to the
-  clipboard. Some only save to a file. Text copies are ignored on purpose.
+- **Nothing happens after a screenshot:** check that the tray icon is blue,
+  not grey (grey means paused), and that your tool copies to the clipboard.
+  Some only save to a file. Text copies are ignored on purpose.
+- **No dialogs appear at all:** Scribe was started hidden from outside (see
+  [Parameters](#parameters)). Exit it from the tray and start it from the
+  Start Menu shortcut.
 - **"Couldn't register Ctrl+Alt+L"**: another app already uses that hotkey
-  (error 1409). Restart the log box with `-Hotkey`, or double-click the tray
-  icon.
+  (error 1409). Change `logHotkey` in settings, or double-click the tray icon.
+- **"Scribe is already watching the clipboard"** from Save-Screenshot.ps1:
+  untick **Watch for screenshots** in Scribe's tray menu first.
+- **A notification didn't show:** Focus Assist may have hidden it. Warnings
+  and errors are also written to `%APPDATA%\ProjectLog\scribe.log`.
 - **Dialog appears behind other windows:** it's set to stay on top, but some
   full-screen apps can still cover it. Alt+Tab to it.

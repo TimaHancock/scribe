@@ -7,14 +7,21 @@ Notes for working in this repo.
 Windows PowerShell tools for low-friction project documentation, following the
 capture system in `documentation-playbook/`:
 
-- `ProjectLog.psm1`: the shared module. Active project, running-log format
-  (`Add-LogEntry`), tags, and `ConvertTo-Slug`.
-- `Start-LogBox.ps1`: tray app with a global hotkey that opens a box for
-  adding tagged entries to the active project's `log.md`.
-- `Save-Screenshot.ps1`: polls the clipboard for new images, asks for a
-  description, saves `YYYY-MM-DD_HHMM_<slug>.png` into the active project and
-  appends a PROOF line.
+- `ProjectLog.psm1`: shared logic, no UI. Active and recent projects,
+  `settings.json`, the clipboard-watch lock, evidence file names, the
+  running-log format (`Add-LogEntry`) and tags. Covered by `tests/`.
+- `ProjectLogUI.psm1`: shared WinForms dialogs (the screenshot description box).
+- `Start-Scribe.ps1`: the tray app. Hotkey log box plus the screenshot watcher,
+  live settings reload. Formerly `Start-LogBox.ps1`.
+- `Install-Scribe.ps1`: Start Menu and Startup shortcuts.
+- `Save-Screenshot.ps1`: console version of the screenshot watcher (polls the
+  clipboard sequence number), for one-off `-OutputDir`/`-LogPath` use.
 - `New-Project.ps1`: scaffolds a project folder per type module.
+
+State lives in `%APPDATA%\ProjectLog\` (`active-project.txt`,
+`recent-projects.txt`, `settings.json`, `last-parent.txt`, `scribe.log`).
+`PROJECTLOG_CONFIG` points at a different `active-project.txt` and moves all of
+them with it; tests and smoke runs must set it so they never touch real state.
 
 `ROADMAP.md` holds the planned direction.
 
@@ -33,9 +40,15 @@ There is no build step, no package manager, and no dependencies outside the
   reads BOM-less scripts as ANSI, so any non-ASCII character outside a
   comment (string literals, regexes) will be garbled. Either keep code
   ASCII-only or re-save the file as UTF-8 *with* a BOM.
-- **The hotkey and the tray icon live in `Start-LogBox.ps1`.** Its hotkey runs
-  on a separate thread that only increments a counter, which a UI timer reads,
-  so no PowerShell code ever runs off the UI thread. Keep it that way.
+- **Scribe's message window only counts.** `Scribe.MessageWindow` (C# in
+  `Start-Scribe.ps1`) receives `WM_HOTKEY` and `WM_CLIPBOARDUPDATE` and only
+  bumps counters; the 100 ms UI timer reads them and runs the PowerShell. Never
+  run PowerShell from `WndProc` or another thread.
+- **One clipboard watcher at a time.** Scribe and `Save-Screenshot.ps1` both
+  take `Enter-ClipboardWatch` before watching, so a screenshot never gets two
+  prompts. Keep that for anything new that reacts to clipboard images.
+- **`$script:busy` serializes dialogs in Scribe.** While a dialog is open,
+  hotkey presses are dropped and clipboard changes wait. New dialogs set it too.
 - **Saved files must stay metadata-free.** Images come from the clipboard and
   are written with `Image.Save(..., Png)`, so they carry no EXIF or GPS data.
   Don't add anything that embeds metadata (author, host name, paths).
@@ -56,8 +69,7 @@ There is no build step, no package manager, and no dependencies outside the
 
 ## Verifying changes
 
-Claude can't drive the interactive loop end to end, because it needs a real
-screenshot and a person typing into the dialog. At minimum, do these:
+At minimum, do these:
 
 1. Parse check under 5.1 (repeat for each changed script):
    ```powershell
@@ -67,13 +79,19 @@ screenshot and a person typing into the dialog. At minimum, do these:
 2. Run the module tests under 5.1:
    `powershell.exe -NoProfile -Command "Invoke-Pester .\tests"`.
    Add a test for any change to `ProjectLog.psm1` logic.
-3. For logic inside the scripts (unique paths, image hashing), copy the
-   function into a scratch script and call it directly. Don't run
-   `Save-Screenshot.ps1` or `Start-LogBox.ps1` whole, because they block
-   forever. `New-Project.ps1 ... -WhatIf` is safe to run.
-4. Ask the user to do a manual run for anything that touches a dialog,
-   the clipboard handling, the hotkey or the main loops:
-   `powershell.exe -STA -ExecutionPolicy Bypass -File .\Save-Screenshot.ps1`
+3. Don't run `Save-Screenshot.ps1` or `Start-Scribe.ps1` in the foreground;
+   they block forever. `New-Project.ps1 ... -WhatIf` and
+   `Install-Scribe.ps1 -WhatIf` are safe to run.
+4. Scribe can be smoke-tested end to end from a scratch STA script: set
+   `PROJECTLOG_CONFIG` to a temp folder, start Scribe with `Start-Process` and
+   an unused `-Hotkey`, put an image on the clipboard, then find and drive its
+   dialogs with UI Automation (`UIAutomationClient`), and send the hotkey with
+   `keybd_event`. Two catches: it replaces the user's clipboard (say so first),
+   and Scribe must be launched with `Start-Process -WindowStyle Minimized` plus
+   powershell's own `-WindowStyle Hidden`, like the shortcut. Launched with
+   `Start-Process -WindowStyle Hidden`, every dialog stays invisible.
+5. Ask the user to do a manual run for focus and feel, for anything that
+   touches a dialog, the clipboard handling or the hotkey.
 
 ## Docs
 
