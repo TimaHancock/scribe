@@ -53,26 +53,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$projectLog = Join-Path $PSScriptRoot 'ProjectLog.psm1'
-$hasProjectLog = Test-Path -LiteralPath $projectLog
-if ($hasProjectLog) { Import-Module $projectLog -Force }
+Import-Module (Join-Path $PSScriptRoot 'ProjectLog.psm1') -Force
 
 $utf8 = New-Object Text.UTF8Encoding $false
 $today = Get-Date
-
-function ConvertTo-Slug {
-    param([string]$Text, [int]$Max = 50)
-    $plain = -join ($Text.Normalize([Text.NormalizationForm]::FormD).ToCharArray() |
-        Where-Object { [Globalization.CharUnicodeInfo]::GetUnicodeCategory($_) -ne 'NonSpacingMark' })
-    $s = ($plain.ToLowerInvariant() -replace '[^a-z0-9]+', '-').Trim('-')
-    if ($s.Length -gt $Max) {
-        $cut = $s.Substring(0, $Max)
-        $hyphen = $cut.LastIndexOf('-')
-        if ($s[$Max] -ne '-' -and $hyphen -ge [int]($Max * 0.6)) { $cut = $cut.Substring(0, $hyphen) }
-        $s = $cut.TrimEnd('-')
-    }
-    return $s
-}
 
 function Get-StatePath([string]$Name) {
     $base = if ($env:APPDATA) { $env:APPDATA } else { Join-Path $HOME '.config' }
@@ -316,14 +300,12 @@ if ($PSCmdlet.ShouldProcess($root, "Create $Module project")) {
 
     Write-Host "Created $Module project: $root" -ForegroundColor Green
 
-    if ($hasProjectLog) {
-        $makeActive = $SetActive
-        if (-not $makeActive) {
-            $answer = Read-Host 'Make it the active project for the log box and screenshots? [Y/n]'
-            $makeActive = -not $answer -or $answer -match '^(y|yes)$'
-        }
-        if ($makeActive) { [void](Set-ActiveProject -Path $root); Write-Host 'Active project set.' }
+    $makeActive = $SetActive
+    if (-not $makeActive) {
+        $answer = Read-Host 'Make it the active project for the log box and screenshots? [Y/n]'
+        $makeActive = -not $answer -or $answer -match '^(y|yes)$'
     }
+    if ($makeActive) { [void](Set-ActiveProject -Path $root); Write-Host 'Active project set.' }
 }
 else {
     # -WhatIf: show what would be built.

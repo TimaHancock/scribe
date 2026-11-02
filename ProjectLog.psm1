@@ -82,6 +82,28 @@ function Get-ProjectPaths {
     }
 }
 
+function ConvertTo-Slug {
+    <#
+        Lowercase-hyphen form for file and folder names, at most MaxLength characters.
+        Returns '' when nothing usable is left; callers pick their own fallback.
+    #>
+    param([string]$Text, [int]$MaxLength = 50)
+    # Fold accents to plain letters (e-acute -> e) before stripping everything else.
+    $plain = -join ("$Text".Normalize([Text.NormalizationForm]::FormD).ToCharArray() |
+        Where-Object { [Globalization.CharUnicodeInfo]::GetUnicodeCategory($_) -ne 'NonSpacingMark' })
+    $slug = ($plain.ToLowerInvariant() -replace '[^a-z0-9]+', '-').Trim('-')
+    if ($slug.Length -gt $MaxLength) {
+        $cut = $slug.Substring(0, $MaxLength)
+        # Prefer ending on a whole word when one ends reasonably close to the limit.
+        $lastHyphen = $cut.LastIndexOf('-')
+        if ($slug[$MaxLength] -ne '-' -and $lastHyphen -ge [int]($MaxLength * 0.6)) {
+            $cut = $cut.Substring(0, $lastHyphen)
+        }
+        $slug = $cut.TrimEnd('-')
+    }
+    return $slug
+}
+
 function Get-KnownLogTags {
     param([string[]]$ExtraTags = @())
     return @($script:CoreTags + $script:ModuleTags + ($ExtraTags | ForEach-Object { $_.ToUpperInvariant() })) |
@@ -175,7 +197,9 @@ function Add-LogEntry {
 
     $sameMinute = $false
     if ($lastDate -ne $today) {
-        if ($existing.Trim()) { [void]$sb.Append([Environment]::NewLine) }
+        # One blank line before the heading; New-Project's log.md already ends with one.
+        $endsBlank = ($existing -replace "`r`n", "`n").EndsWith("`n`n")
+        if ($existing.Trim() -and -not $endsBlank) { [void]$sb.Append([Environment]::NewLine) }
         [void]$sb.Append("## $today (times local, $(Get-UtcOffsetLabel $When))").Append([Environment]::NewLine)
     }
     elseif ($lastStamp -eq $When.ToString('HH:mm')) {
@@ -199,5 +223,5 @@ function Get-LogTail {
     return @(Get-Content -LiteralPath $LogPath -Encoding UTF8 | Where-Object { $_.Trim() } | Select-Object -Last $Count)
 }
 
-Export-ModuleMember -Function Get-ActiveProject, Set-ActiveProject, Get-ProjectPaths, Get-KnownLogTags, Get-LogTagHelp,
+Export-ModuleMember -Function Get-ActiveProject, Set-ActiveProject, Get-ProjectPaths, ConvertTo-Slug, Get-KnownLogTags, Get-LogTagHelp,
     Split-LogInput, Format-LogEntry, Add-LogEntry, Get-LogTail

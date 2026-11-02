@@ -225,7 +225,13 @@ function Show-LogBox {
             $link.Add_LinkClicked({
                 param($s, $e)
                 $tag = $s.Tag
-                # TODO(human): put $tag into $entry, then return focus to $entry.
+                # Swap out a tag that's already typed rather than stacking a second one.
+                $m = [regex]::Match($entry.Text, '^(\S+)[ \t]*(.*)$', 'Singleline')
+                $rest = $entry.Text
+                if ($m.Success -and $knownTags -contains $m.Groups[1].Value.ToUpperInvariant()) { $rest = $m.Groups[2].Value }
+                $entry.Text = "$tag $($rest.TrimStart())"
+                [void]$entry.Focus()
+                $entry.SelectionStart = $entry.TextLength
             })
             $tags.Controls.Add($link)
         }

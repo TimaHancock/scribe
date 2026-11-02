@@ -11,6 +11,8 @@
 
     The timestamp is the moment the image hit the clipboard, not when you
     finished typing. Descriptions are turned into lowercase-hyphen slugs.
+    An image identical to the last one handled (saved or skipped) is ignored,
+    since some tools re-copy the capture when their window closes.
     Clipboard images carry no EXIF or GPS metadata, so saved PNGs are clean.
 
 .PARAMETER OutputDir
@@ -75,23 +77,33 @@ function Get-Targets {
     [pscustomobject]@{ Dir = $dir; Log = $log }
 }
 
-function ConvertTo-Slug {
+function Get-ShotSlug {
     param([string]$Text)
-    # Fold accents to plain letters (é -> e) before stripping everything else.
-    $plain = -join ($Text.Normalize([Text.NormalizationForm]::FormD).ToCharArray() |
-        Where-Object { [Globalization.CharUnicodeInfo]::GetUnicodeCategory($_) -ne 'NonSpacingMark' })
-    $slug = ($plain.ToLowerInvariant() -replace '[^a-z0-9]+', '-').Trim('-')
-    if ($slug.Length -gt $MaxSlugLength) {
-        $cut = $slug.Substring(0, $MaxSlugLength)
-        # Prefer ending on a whole word when one ends reasonably close to the limit.
-        $lastHyphen = $cut.LastIndexOf('-')
-        if ($slug[$MaxSlugLength] -ne '-' -and $lastHyphen -ge [int]($MaxSlugLength * 0.6)) {
-            $cut = $cut.Substring(0, $lastHyphen)
-        }
-        $slug = $cut.TrimEnd('-')
-    }
+    $slug = ConvertTo-Slug -Text $Text -MaxLength $MaxSlugLength
     if (-not $slug) { $slug = 'screenshot' }
     return $slug
+}
+
+function Get-ImageHash {
+    param([System.Drawing.Bitmap]$Image)
+    # Lock as 32bpp ARGB so the same pixels hash the same whichever clipboard
+    # format (DIB, PNG, ...) the image was read from.
+    $rect = New-Object System.Drawing.Rectangle(0, 0, $Image.Width, $Image.Height)
+    $data = $Image.LockBits($rect, 'ReadOnly', [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+    try {
+        $bytes = New-Object byte[] ($data.Stride * $data.Height)
+        [Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
+    }
+    finally {
+        $Image.UnlockBits($data)
+    }
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return '{0}x{1}:{2}' -f $Image.Width, $Image.Height, [BitConverter]::ToString($sha.ComputeHash($bytes))
+    }
+    finally {
+        $sha.Dispose()
+    }
 }
 
 function Get-UniquePath {
@@ -154,7 +166,7 @@ function Show-DescriptionPrompt {
 
     $form.AcceptButton = $save
     $form.CancelButton = $skip
-    $box.Add_TextChanged({ $nameLabel.Text = "${Stamp}_$(ConvertTo-Slug $box.Text).png" })
+    $box.Add_TextChanged({ $nameLabel.Text = "${Stamp}_$(Get-ShotSlug $box.Text).png" })
     $form.Add_Shown({ $form.Activate(); [void]$box.Focus() })
     $form.Controls.AddRange(@($preview, $label, $box, $nameLabel, $save, $skip))
 
@@ -183,6 +195,7 @@ if ($start.Log) { Write-Host "Appending PROOF lines to: $($start.Log)" }
 Write-Host 'Take a screenshot to start. Ctrl+C stops.'
 
 $last = [SaveShot.Native]::GetClipboardSequenceNumber()
+$lastHash = $null
 
 while ($true) {
     Start-Sleep -Milliseconds 400
@@ -203,9 +216,15 @@ while ($true) {
     }
     if ($null -eq $image) { continue }
 
-    $captured = Get-Date
-    $stamp = $captured.ToString('yyyy-MM-dd_HHmm')
     try {
+        # The Snipping Tool puts the same capture on the clipboard again when its
+        # window closes, which bumps the sequence number. Only prompt for new pixels.
+        $hash = Get-ImageHash $image
+        if ($hash -eq $lastHash) { continue }
+        $lastHash = $hash
+
+        $captured = Get-Date
+        $stamp = $captured.ToString('yyyy-MM-dd_HHmm')
         $description = Show-DescriptionPrompt -Stamp $stamp -Image $image
         if ($null -eq $description) {
             Write-Host "Skipped capture from $stamp"
@@ -213,7 +232,7 @@ while ($true) {
         else {
             $targets = Get-Targets
             New-Item -ItemType Directory -Path $targets.Dir -Force | Out-Null
-            $path = Get-UniquePath -Dir $targets.Dir -Base "${stamp}_$(ConvertTo-Slug $description)"
+            $path = Get-UniquePath -Dir $targets.Dir -Base "${stamp}_$(Get-ShotSlug $description)"
             $image.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
             Write-Host "Saved $path"
             if ($targets.Log) { Add-ProofLine -Log $targets.Log -When $captured -Path $path }

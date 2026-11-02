@@ -4,12 +4,19 @@ Notes for working in this repo.
 
 ## What this is
 
-A single Windows PowerShell script, `Save-Screenshot.ps1`, that polls the
-clipboard for new images. For each one it shows a WinForms dialog with a
-preview and a description box, then saves the image as
-`YYYY-MM-DD_HHMM_<slug>.png`. If `-LogPath` is set, it also appends a
-`HH:mm PROOF     <relative path>` line to that log. It is meant for collecting
-evidence during security engagements and labs.
+Windows PowerShell tools for low-friction project documentation, following the
+capture system in `documentation-playbook/`:
+
+- `ProjectLog.psm1`: the shared module. Active project, running-log format
+  (`Add-LogEntry`), tags, and `ConvertTo-Slug`.
+- `Start-LogBox.ps1`: tray app with a global hotkey that opens a box for
+  adding tagged entries to the active project's `log.md`.
+- `Save-Screenshot.ps1`: polls the clipboard for new images, asks for a
+  description, saves `YYYY-MM-DD_HHMM_<slug>.png` into the active project and
+  appends a PROOF line.
+- `New-Project.ps1`: scaffolds a project folder per type module.
+
+`ROADMAP.md` holds the planned direction.
 
 There is no build step, no package manager, and no dependencies outside the
 .NET Framework assemblies that ship with Windows.
@@ -26,6 +33,9 @@ There is no build step, no package manager, and no dependencies outside the
   reads BOM-less scripts as ANSI, so any non-ASCII character outside a
   comment (string literals, regexes) will be garbled. Either keep code
   ASCII-only or re-save the file as UTF-8 *with* a BOM.
+- **The hotkey and the tray icon live in `Start-LogBox.ps1`.** Its hotkey runs
+  on a separate thread that only increments a counter, which a UI timer reads,
+  so no PowerShell code ever runs off the UI thread. Keep it that way.
 - **Saved files must stay metadata-free.** Images come from the clipboard and
   are written with `Image.Save(..., Png)`, so they carry no EXIF or GPS data.
   Don't add anything that embeds metadata (author, host name, paths).
@@ -49,17 +59,20 @@ There is no build step, no package manager, and no dependencies outside the
 Claude can't drive the interactive loop end to end, because it needs a real
 screenshot and a person typing into the dialog. At minimum, do these:
 
-1. Parse check under 5.1:
+1. Parse check under 5.1 (repeat for each changed script):
    ```powershell
-   powershell.exe -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile("C:\dev\screenshoter\Save-Screenshot.ps1",[ref]$null,[ref]$e); $e'
+   powershell.exe -NoProfile -Command '$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile("C:\dev\logger\Save-Screenshot.ps1",[ref]$null,[ref]$e); $e'
    ```
    No output means there are no parse errors.
-2. For logic changes (slugging, unique paths, PROOF line formatting),
-   dot-source the functions or copy them into a scratch script and call them
-   directly. Don't run the whole script, because it blocks forever in the
-   watch loop.
-3. Ask the user to do a manual run for anything that touches the dialog,
-   the clipboard handling, or the main loop:
+2. Run the module tests under 5.1:
+   `powershell.exe -NoProfile -Command "Invoke-Pester .\tests"`.
+   Add a test for any change to `ProjectLog.psm1` logic.
+3. For logic inside the scripts (unique paths, image hashing), copy the
+   function into a scratch script and call it directly. Don't run
+   `Save-Screenshot.ps1` or `Start-LogBox.ps1` whole, because they block
+   forever. `New-Project.ps1 ... -WhatIf` is safe to run.
+4. Ask the user to do a manual run for anything that touches a dialog,
+   the clipboard handling, the hotkey or the main loops:
    `powershell.exe -STA -ExecutionPolicy Bypass -File .\Save-Screenshot.ps1`
 
 ## Docs
