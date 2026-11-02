@@ -345,6 +345,16 @@ function ConvertTo-Slug {
     return $slug
 }
 
+function Get-ProjectFolderName {
+    <# "YYYY-MM-<slug>" for a new project, or '' when the name has no letters or digits. #>
+    param([string]$Name, [datetime]$When = (Get-Date))
+    $slug = ConvertTo-Slug $Name
+    if (-not $slug) { return '' }
+    # Don't double the date prefix if one was typed.
+    if ($slug -notmatch '^\d{4}-\d{2}-') { $slug = '{0}-{1}' -f $When.ToString('yyyy-MM'), $slug }
+    return $slug
+}
+
 # --- Evidence files ---------------------------------------------------------------
 
 function Get-EvidenceName {
@@ -656,6 +666,6 @@ function Get-LogTail {
 Export-ModuleMember -Function Get-ProjectLogStatePath, Get-ActiveProject, Set-ActiveProject, Get-RecentProjects, Get-ProjectPaths,
     Get-ProjectFolders, Get-ProjectChoices, Get-ObsidianVault, Get-ObsidianUri, Set-FrontmatterValue,
     Get-ProjectLogSettings, Initialize-ProjectLogSettings, Enter-ClipboardWatch, Exit-ClipboardWatch,
-    ConvertTo-Slug, Get-EvidenceName, Get-UniquePath, Add-ProofEntry, Get-ImageHash,
+    ConvertTo-Slug, Get-ProjectFolderName, Get-EvidenceName, Get-UniquePath, Add-ProofEntry, Get-ImageHash,
     Get-KnownLogTags, Get-LogTagHelp, Split-LogInput, Format-LogEntry, Find-LogFormat, Resolve-LogFormat,
     Add-LogEntry, ConvertTo-ObsidianLog, Get-LogTail

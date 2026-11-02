@@ -213,16 +213,27 @@ $script:clipDue = $null
 $script:tick = 0
 $script:hotkeyText = $null
 $script:settingsStamp = $null
+$script:clearNotificationsAt = $null   # when to clear shown notifications from the notification center
 
 function Show-TrayMessage {
     param([string]$Text, [ValidateSet('Info', 'Warning', 'Error')][string]$Level = 'Info')
     $shown = if ($Text.Length -gt 250) { $Text.Substring(0, 247) + '...' } else { $Text }
     $tray.ShowBalloonTip(8000, 'Scribe', $shown, $Level)
+    # Windows ignores the timeout and keeps the notification in the notification
+    # center; the UI timer clears it once it has been on screen.
+    $script:clearNotificationsAt = (Get-Date).AddSeconds(10)
     # Balloons can be hidden by Focus Assist, so keep problems in a file too.
     if ($Level -ne 'Info') {
         try { Add-Content -LiteralPath (Get-ProjectLogStatePath 'scribe.log') -Value "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $Level $Text" -Encoding UTF8 }
         catch { }
     }
+}
+
+function Clear-TrayMessages {
+    <# Removing the tray icon takes its notifications out of the notification center; then it comes straight back. #>
+    $script:clearNotificationsAt = $null
+    $tray.Visible = $false
+    $tray.Visible = $true
 }
 
 function Get-SettingsStamp {
@@ -584,11 +595,117 @@ function Open-ActiveProjectItem {
     if ($What -eq 'Folder') { Invoke-Item -LiteralPath $root; return }
     $log = (Get-ProjectPaths -Root $root).Log
     if (-not (Test-Path -LiteralPath $log)) { New-Item -ItemType File -Path $log | Out-Null }
-    if (Test-OpensInObsidian -Path $log) {
-        try { Start-Process -FilePath (Get-ObsidianUri -Path $log) -ErrorAction Stop; return }
+    Open-Note -Path $log
+}
+
+function Open-Note {
+    <# Opens a Markdown file in Obsidian when it's in a vault, otherwise in its default app. #>
+    param([Parameter(Mandatory)][string]$Path)
+    if (Test-OpensInObsidian -Path $Path) {
+        try { Start-Process -FilePath (Get-ObsidianUri -Path $Path) -ErrorAction Stop; return }
         catch { }   # fall through to the default app
     }
-    Start-Process -FilePath $log
+    try { Start-Process -FilePath $Path -ErrorAction Stop }
+    catch { Start-Process -FilePath notepad.exe -ArgumentList "`"$Path`"" }
+}
+
+function Invoke-ProjectScript {
+    <#
+        Runs one of this folder's scripts in its own powershell.exe, so its
+        Import-Module and prompts can't disturb Scribe. Returns ExitCode and
+        Message (the last error line, or the output).
+    #>
+    param([Parameter(Mandatory)][string]$Name, [string[]]$Arguments = @())
+    $ErrorActionPreference = 'Continue'   # the child's stderr is data here, not a failure of Scribe
+    $exe = Join-Path $PSHOME 'powershell.exe'
+    $output = @(& $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot $Name) @Arguments 2>&1)
+    $code = $LASTEXITCODE
+    # A thrown error arrives on stderr wrapped at the console width, as
+    # "<script> : <message>" followed by "+ CategoryInfo" detail. Rejoin the
+    # message lines and drop the rest.
+    $errLines = @($output | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] } | ForEach-Object { "$_" })
+    $message = ''
+    foreach ($line in $errLines) {
+        if ($line -match '^\s*(\+|At line:|At [A-Za-z]:\\)') { break }
+        $message += $line.Trim()
+    }
+    $message = $message -replace '^.*?\.ps1 : ', ''
+    if (-not $message) { $message = (@($output | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) | Select-Object -Last 1) }
+    return [pscustomobject]@{ ExitCode = $code; Message = "$message" }
+}
+
+function ConvertTo-ArgumentPath {
+    <# A folder path that survives being quoted on a command line: no trailing backslash to escape the quote. #>
+    param([Parameter(Mandatory)][string]$Path)
+    $p = $Path.TrimEnd('\')
+    if ($p -match '^[A-Za-z]:$') { $p += '\.' }
+    return $p
+}
+
+function New-ProjectFromTray {
+    if ($script:busy) { return }
+    $script:busy = $true
+    try {
+        $parent = $script:projectsFolder
+        $last = Get-ProjectLogStatePath 'last-parent.txt'
+        if (-not $parent -and (Test-Path -LiteralPath $last)) { $parent = (Get-Content -LiteralPath $last -Raw -Encoding UTF8).Trim() }
+        $choice = Show-NewProjectDialog -Parent $parent
+        if (-not $choice) { return }
+
+        $arguments = @('-Slug', $choice.Name, '-Module', $choice.Module, '-Path', (ConvertTo-ArgumentPath $choice.Path), '-SetActive')
+        if ($choice.Module -eq 'Capstone') { $arguments += @('-Tasks', $choice.Tasks) }
+        $result = Invoke-ProjectScript -Name 'New-Project.ps1' -Arguments $arguments
+        $root = Join-Path $choice.Path $choice.Name
+        if ($result.ExitCode -or -not (Test-Path -LiteralPath $root)) {
+            Show-TrayMessage "Couldn't create the project. $($result.Message)" Error
+            return
+        }
+        Update-TrayText
+        Show-TrayMessage "Created $($choice.Name). It's the active project now."
+        if ($choice.OpenReadme) { Open-Note -Path (Join-Path $root 'README.md') }
+    }
+    catch { Show-TrayMessage "Couldn't create the project: $($_.Exception.Message)" Error }
+    finally { $script:busy = $false }
+}
+
+function Update-ConvertMenu {
+    <# Lists the projects whose logs are still in the plain format. #>
+    $convertMenu.DropDownItems.Clear()
+    foreach ($p in @(Get-ProjectChoices -ProjectsFolder $script:projectsFolder)) {
+        $log = (Get-ProjectPaths -Root $p).Log
+        if (-not (Test-Path -LiteralPath $log)) { continue }
+        if ((Resolve-LogFormat -LogPath $log -DefaultFormat obsidian) -ne 'plain') { continue }
+        $item = New-Object System.Windows.Forms.ToolStripMenuItem (Split-Path -Leaf $p)
+        $item.Tag = $log
+        $item.ToolTipText = $log
+        $item.Add_Click({ param($s, $e) Convert-ProjectLog -LogPath $s.Tag })
+        [void]$convertMenu.DropDownItems.Add($item)
+    }
+    if (-not $convertMenu.DropDownItems.Count) {
+        $none = $convertMenu.DropDownItems.Add('No plain-format logs to convert')
+        $none.Enabled = $false
+    }
+}
+
+function Convert-ProjectLog {
+    param([Parameter(Mandatory)][string]$LogPath)
+    if ($script:busy) { return }
+    $script:busy = $true
+    try {
+        $name = Split-Path -Leaf (Split-Path -Parent $LogPath)
+        $answer = [System.Windows.Forms.MessageBox]::Show(
+            "Rewrite the log of $name in the Obsidian format?`n`nThe original is kept beside it as log.md.bak.",
+            'Scribe - convert log', 'YesNo', 'Question', 'Button1')
+        if ($answer -ne 'Yes') { return }
+        $result = Invoke-ProjectScript -Name 'Convert-Log.ps1' -Arguments @('-Path', $LogPath)
+        if ($result.ExitCode -or (Resolve-LogFormat -LogPath $LogPath -DefaultFormat plain) -ne 'obsidian') {
+            Show-TrayMessage "Couldn't convert the log of $name. $($result.Message)" Error
+            return
+        }
+        Show-TrayMessage "Converted the log of $name. The original is in log.md.bak."
+    }
+    catch { Show-TrayMessage "Couldn't convert the log: $($_.Exception.Message)" Error }
+    finally { $script:busy = $false }
 }
 
 function Test-OpensInObsidian {
@@ -611,6 +728,7 @@ $newEntry.Font = New-Object System.Drawing.Font($newEntry.Font, [System.Drawing.
 $projectMenu = New-Object System.Windows.Forms.ToolStripMenuItem 'Project'
 $projectMenu.Add_DropDownOpening({ Update-ProjectMenu })
 [void]$menu.Items.Add($projectMenu)
+[void]$menu.Items.Add('New project...', $null, { New-ProjectFromTray })
 $watchItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Watch for screenshots'
 $watchItem.Add_Click({ Set-Watching (-not $script:watching) })
 [void]$menu.Items.Add($watchItem)
@@ -621,6 +739,10 @@ $menu.Add_Opening({
     $openLogItem.Text = if ($root -and (Test-OpensInObsidian -Path $root)) { 'Open log in Obsidian' } else { 'Open log' }
 })
 [void]$menu.Items.Add('Open project folder', $null, { Open-ActiveProjectItem -What Folder })
+$convertMenu = New-Object System.Windows.Forms.ToolStripMenuItem 'Convert log to Obsidian'
+$convertMenu.Add_DropDownOpening({ Update-ConvertMenu })
+[void]$convertMenu.DropDownItems.Add('...')   # placeholder so the arrow shows; filled on opening
+[void]$menu.Items.Add($convertMenu)
 [void]$menu.Items.Add('Edit settings', $null, {
     $path = Initialize-ProjectLogSettings
     # Fall back to Notepad when .json has no default app.
@@ -650,6 +772,10 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 100
 $timer.Add_Tick({
     try {
+        # Not while the tray menu is open: hiding the icon would close it.
+        if ($script:clearNotificationsAt -and (Get-Date) -ge $script:clearNotificationsAt -and -not $menu.Visible) {
+            Clear-TrayMessages
+        }
         if ($script:busy) {
             # A dialog is open: drop hotkey presses, leave clipboard changes for later.
             [void]$window.TakePress($LogHotkeyId)

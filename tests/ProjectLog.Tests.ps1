@@ -44,6 +44,18 @@ Describe 'ConvertTo-Slug' {
     }
 }
 
+Describe 'Get-ProjectFolderName' {
+    It 'prefixes the year and month' {
+        Get-ProjectFolderName -Name 'Proxy Lab' -When ([datetime]'2026-11-02') | Should -Be '2026-11-proxy-lab'
+    }
+    It "doesn't double a typed date prefix" {
+        Get-ProjectFolderName -Name '2026-10 old lab' -When ([datetime]'2026-11-02') | Should -Be '2026-10-old-lab'
+    }
+    It 'returns an empty string for a name with no letters or digits' {
+        Get-ProjectFolderName -Name '?!' | Should -Be ''
+    }
+}
+
 Describe 'Get-KnownLogTags' {
     It 'includes core and module tags' {
         $tags | Should -Contain 'TRY'

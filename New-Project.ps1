@@ -209,10 +209,8 @@ function Get-Layout([string]$Name, [int]$TaskCount) {
 # --- Gather input -------------------------------------------------------------
 
 if (-not $Slug) { $Slug = Read-Host 'Project slug (e.g. "proxy lab" or "net101 task 1")' }
-$clean = ConvertTo-Slug $Slug
+$clean = Get-ProjectFolderName -Name $Slug -When $today
 if (-not $clean) { throw 'The slug needs at least one letter or number.' }
-# Don't double the date prefix if one was typed.
-if ($clean -notmatch '^\d{4}-\d{2}-') { $clean = '{0}-{1}' -f $today.ToString('yyyy-MM'), $clean }
 
 if (-not $Module) { $Module = Select-Module }
 if ($Module -eq 'Capstone' -and -not $Tasks) {

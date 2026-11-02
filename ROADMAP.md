@@ -82,6 +82,16 @@ if the PowerShell ceiling is reached.
   modules instead of copies pasted into the script, so a template is edited in
   one place.
 
+## Phase 2.5: Project tools in the tray
+
+- [x] **New project...** in the tray menu: a dialog for name, type, task count
+  and parent folder (starting at `projectsFolder`) that shows the folder name
+  and refuses one that exists, then runs `New-Project.ps1`, makes the project
+  active and opens its kickoff card.
+- [x] **Convert log to Obsidian** in the tray menu: lists the projects whose
+  logs are still plain and runs `Convert-Log.ps1` on the one you pick, after a
+  confirmation.
+
 ## Phase 3: More ways to capture, each one keystroke
 
 - Copied text goes straight into the log: copy an error, press `Ctrl+Alt+V`,
@@ -129,8 +139,5 @@ the background, and capturing is the whole point.
 
 ## Order
 
-Phase 0, Phase 1, then the clipboard-text hotkey and terminal `log` function
-from Phase 3, then Phase 2, then `Export-LogDigest`, then the rest.
-
-Decide early on the log format switch in Phase 2. It changes the playbook's
-running-log template and is easier before many logs exist in the old format.
+Phases 0, 1, 2 and 2.5 are done. Next: the clipboard-text hotkey and terminal
+`log` function from Phase 3, then `Export-LogDigest`, then the rest.

@@ -122,4 +122,143 @@ function Show-DescriptionPrompt {
     return $null
 }
 
-Export-ModuleMember -Function Show-DescriptionPrompt
+function Show-NewProjectDialog {
+    <#
+        Asks for what New-Project.ps1 needs. Returns Name (the folder name),
+        Module, Tasks, Path and OpenReadme, or $null if cancelled. Checks that
+        the folder can be created before it closes.
+    #>
+    param([string]$Parent)
+
+    # Same choices and order as New-Project.ps1's console menu.
+    $modules = [ordered]@{
+        Core      = 'Core - no type module'
+        ITProject = 'IT project - migration, deployment, rollout'
+        Runbook   = 'Runbook - writing one procedure'
+        TechEval  = 'Tech evaluation - choosing a product or tool'
+        Academic  = 'Academic - one graded task'
+        Capstone  = 'Capstone - multi-task capstone'
+    }
+    $font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $form = New-Object System.Windows.Forms.Form -Property @{
+        Text            = 'New project'
+        FormBorderStyle = 'FixedDialog'
+        MaximizeBox     = $false
+        MinimizeBox     = $false
+        StartPosition   = 'CenterScreen'
+        TopMost         = $true
+        Font            = $font
+        ClientSize      = New-Object System.Drawing.Size(470, 238)
+    }
+    $nameLabel = New-Object System.Windows.Forms.Label -Property @{ Text = 'Name'; AutoSize = $true; Location = New-Object System.Drawing.Point(10, 15) }
+    $nameBox = New-Object System.Windows.Forms.TextBox -Property @{
+        Location = New-Object System.Drawing.Point(90, 12)
+        Size     = New-Object System.Drawing.Size(370, 24)
+    }
+    $folderLabel = New-Object System.Windows.Forms.Label -Property @{
+        Text      = 'Type a short name, such as "proxy lab"'
+        ForeColor = [System.Drawing.Color]::DimGray
+        Location  = New-Object System.Drawing.Point(90, 38)
+        Size      = New-Object System.Drawing.Size(370, 18)
+    }
+    $typeLabel = New-Object System.Windows.Forms.Label -Property @{ Text = 'Type'; AutoSize = $true; Location = New-Object System.Drawing.Point(10, 67) }
+    $typePick = New-Object System.Windows.Forms.ComboBox -Property @{
+        DropDownStyle = 'DropDownList'
+        Location      = New-Object System.Drawing.Point(90, 64)
+        Size          = New-Object System.Drawing.Size(290, 24)
+    }
+    foreach ($v in $modules.Values) { [void]$typePick.Items.Add($v) }
+    $typePick.SelectedIndex = 0
+    $tasksLabel = New-Object System.Windows.Forms.Label -Property @{ Text = 'Tasks'; AutoSize = $true; Location = New-Object System.Drawing.Point(388, 67) }
+    $tasks = New-Object System.Windows.Forms.NumericUpDown -Property @{
+        Minimum  = 1
+        Maximum  = 12
+        Value    = 3
+        Enabled  = $false
+        Location = New-Object System.Drawing.Point(425, 64)
+        Size     = New-Object System.Drawing.Size(35, 24)
+    }
+    $pathLabel = New-Object System.Windows.Forms.Label -Property @{ Text = 'Create in'; AutoSize = $true; Location = New-Object System.Drawing.Point(10, 101) }
+    $pathBox = New-Object System.Windows.Forms.TextBox -Property @{
+        Text     = $Parent
+        Location = New-Object System.Drawing.Point(90, 98)
+        Size     = New-Object System.Drawing.Size(285, 24)
+    }
+    $browse = New-Object System.Windows.Forms.Button -Property @{
+        Text     = 'Browse...'
+        Location = New-Object System.Drawing.Point(385, 97)
+        Size     = New-Object System.Drawing.Size(75, 26)
+    }
+    $openReadme = New-Object System.Windows.Forms.CheckBox -Property @{
+        Text     = 'Open the kickoff card (README.md) when it''s created'
+        Checked  = $true
+        AutoSize = $true
+        Location = New-Object System.Drawing.Point(90, 132)
+    }
+    $status = New-Object System.Windows.Forms.Label -Property @{
+        ForeColor = [System.Drawing.Color]::Firebrick
+        Location  = New-Object System.Drawing.Point(10, 160)
+        Size      = New-Object System.Drawing.Size(450, 36)
+    }
+    $create = New-Object System.Windows.Forms.Button -Property @{
+        Text     = 'Create'
+        Location = New-Object System.Drawing.Point(304, 202)
+        Size     = New-Object System.Drawing.Size(75, 26)
+    }
+    $cancel = New-Object System.Windows.Forms.Button -Property @{
+        Text         = 'Cancel'
+        DialogResult = 'Cancel'
+        Location     = New-Object System.Drawing.Point(385, 202)
+        Size         = New-Object System.Drawing.Size(75, 26)
+    }
+
+    $nameBox.Add_TextChanged({
+        $folder = Get-ProjectFolderName -Name $nameBox.Text
+        $folderLabel.Text = if ($folder) { "Folder: $folder" } else { 'Type a short name, such as "proxy lab"' }
+    })
+    $typePick.Add_SelectedIndexChanged({ $tasks.Enabled = ($typePick.SelectedIndex -eq 5) })
+    $browse.Add_Click({
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog -Property @{
+            Description         = 'Where should the new project folder go?'
+            ShowNewFolderButton = $true
+        }
+        if ($pathBox.Text -and (Test-Path -LiteralPath $pathBox.Text)) { $dialog.SelectedPath = $pathBox.Text }
+        try { if ($dialog.ShowDialog($form) -eq 'OK') { $pathBox.Text = $dialog.SelectedPath } }
+        finally { $dialog.Dispose() }
+    })
+    # Validate here, so a mistake is fixed in the dialog instead of failing afterwards.
+    $create.Add_Click({
+        $folder = Get-ProjectFolderName -Name $nameBox.Text
+        $parentPath = $pathBox.Text.Trim()
+        if (-not $folder) { $status.Text = 'The name needs at least one letter or number.'; return }
+        if (-not $parentPath -or -not (Test-Path -LiteralPath $parentPath -PathType Container)) { $status.Text = 'Choose a folder that exists to create the project in.'; return }
+        if (Test-Path -LiteralPath (Join-Path $parentPath $folder)) { $status.Text = "$folder already exists there. Choose another name."; return }
+        $form.DialogResult = 'OK'
+    })
+    $form.AcceptButton = $create
+    $form.CancelButton = $cancel
+    $form.Add_Shown({
+        $form.Activate()
+        [void][ProjectLogUI.Foreground]::Take($form.Handle)
+        [void]$nameBox.Focus()
+    })
+    $form.Controls.AddRange(@($nameLabel, $nameBox, $folderLabel, $typeLabel, $typePick, $tasksLabel, $tasks,
+            $pathLabel, $pathBox, $browse, $openReadme, $status, $create, $cancel))
+
+    try {
+        if ($form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
+        return [pscustomobject]@{
+            Name       = Get-ProjectFolderName -Name $nameBox.Text
+            Module     = @($modules.Keys)[$typePick.SelectedIndex]
+            Tasks      = [int]$tasks.Value
+            Path       = $pathBox.Text.Trim()
+            OpenReadme = $openReadme.Checked
+        }
+    }
+    finally {
+        $form.Dispose()
+        $font.Dispose()
+    }
+}
+
+Export-ModuleMember -Function Show-DescriptionPrompt, Show-NewProjectDialog

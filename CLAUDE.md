@@ -26,6 +26,11 @@ capture system in `documentation-playbook/`:
   (`started`, `updated`, `module` placeholders) that it fills in.
 - `Convert-Log.ps1`: rewrites a plain-format log in the obsidian format.
 
+Scribe runs `New-Project.ps1` and `Convert-Log.ps1` from the tray in a child
+`powershell.exe` (`Invoke-ProjectScript`), never in-process: they re-import
+the module with `-Force` and can prompt. Pass every parameter they would
+otherwise ask for.
+
 State lives in `%APPDATA%\ProjectLog\` (`active-project.txt`,
 `recent-projects.txt`, `settings.json`, `last-parent.txt`, `scribe.log`).
 `PROJECTLOG_CONFIG` points at a different `active-project.txt` and moves all of

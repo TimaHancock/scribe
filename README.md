@@ -113,9 +113,11 @@ screenshots** in the tray menu.
 | --- | --- |
 | New log entry | Opens the log box (double-clicking the icon does too) |
 | Project | Recent projects, then the rest of `projectsFolder`, with the active one ticked, and Choose folder... |
+| New project... | Asks for a name, type and folder (`projectsFolder` to start with), runs [New-Project.ps1](#new-projectps1), makes the new project active and opens its kickoff card |
 | Watch for screenshots | Pauses or resumes the screenshot watcher |
 | Open log | Opens the active project's `log.md`: in Obsidian when the project is inside a vault, otherwise in the default app for `.md` |
 | Open project folder | Opens the active project's folder |
+| Convert log to Obsidian | Lists the projects whose logs are still in the plain format; pick one and confirm to run [Convert-Log.ps1](#convert-logps1) on it |
 | Edit settings | Opens `settings.json`, creating it with the defaults first |
 | Exit | Stops Scribe |
 
@@ -264,7 +266,8 @@ screenshots** in Scribe's tray menu before starting this script.
 
 ## Convert-Log.ps1
 
-Rewrites a plain-format log in the Obsidian format. Entries become list items
+Rewrites a plain-format log in the Obsidian format. Scribe's tray menu runs it
+too, under **Convert log to Obsidian**. Entries become list items
 and extra lines go in code blocks. PROOF paths to images in the project become
 embeds. The original is kept as `log.md.bak`.
 
@@ -353,6 +356,8 @@ powershell.exe -NoProfile -Command "Invoke-Pester .\tests"
 - **"Scribe is already watching the clipboard"** from Save-Screenshot.ps1:
   untick **Watch for screenshots** in Scribe's tray menu first.
 - **A notification didn't show:** Focus Assist may have hidden it. Warnings
-  and errors are also written to `%APPDATA%\ProjectLog\scribe.log`.
+  and errors are also written to `%APPDATA%\ProjectLog\scribe.log`. Scribe
+  clears its notifications from the notification center about 10 seconds
+  after showing them, so look in that file for older ones.
 - **Dialog appears behind other windows:** it's set to stay on top, but some
   full-screen apps can still cover it. Alt+Tab to it.
