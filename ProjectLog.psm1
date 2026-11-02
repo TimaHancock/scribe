@@ -4,7 +4,21 @@
 
     Keeps the active project, the recent-projects list and settings.json under
     %APPDATA%\ProjectLog, names evidence files, and appends entries to the
-    project's log.md in the playbook's running-log format:
+    project's log.md in one of the playbook's running-log formats.
+
+    obsidian (the default for new logs) renders as a list in Obsidian; extra
+    lines go in a code block, and PROOF embeds the file:
+
+        ## 2026-10-26 (times local, UTC-4)
+        - 14:32 **TRY** Pointed the reverse proxy at port 8080
+        - 14:33 **SAW** 502 Bad Gateway
+          ```
+          connect() failed (111: Connection refused)
+          ```
+        - 14:33 **PROOF** ![[2026-10-26_1433_proxy-502.png]]
+
+    plain lines up in columns for a text editor; a second entry in the same
+    minute drops its time, and extra lines are indented under the text:
 
         ## 2026-10-26 (times local, UTC-4)
         14:32 TRY      Pointed the reverse proxy at port 8080.
@@ -12,8 +26,8 @@
                        connect() failed (111: Connection refused)
               PROOF    evidence/terminal/2026-10-26_1432_proxy-error.txt
 
-    A new date heading is written when the day changes, a second entry in the
-    same minute drops its time, and extra lines are indented under the text.
+    A log keeps the format of the entries already in it, so the two never mix.
+    A new date heading is written when the day changes.
 #>
 
 Set-StrictMode -Version Latest
@@ -103,6 +117,82 @@ function Get-RecentProjects {
     return @($out | Select-Object -First $Count)
 }
 
+function Get-ProjectFolders {
+    <#
+        Project folders directly under a projects folder, most recently logged
+        first. Only folders with a log.md count, so other notes in a vault are left out.
+    #>
+    param([string]$Path)
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Container)) { return @() }
+    $found = foreach ($dir in Get-ChildItem -LiteralPath $Path -Directory) {
+        $log = Join-Path $dir.FullName 'log.md'
+        if (Test-Path -LiteralPath $log -PathType Leaf) {
+            [pscustomobject]@{ Path = $dir.FullName; Logged = (Get-Item -LiteralPath $log).LastWriteTimeUtc }
+        }
+    }
+    return @($found | Sort-Object Logged -Descending | ForEach-Object { $_.Path })
+}
+
+function Get-ProjectChoices {
+    <# Recent projects first, then the rest of the projects folder, without duplicates. #>
+    param([string]$ProjectsFolder)
+    $seen = @{}
+    $out = foreach ($p in @(Get-RecentProjects) + @(Get-ProjectFolders -Path $ProjectsFolder)) {
+        if ($seen.ContainsKey($p)) { continue }
+        $seen[$p] = $true
+        $p
+    }
+    return @($out)
+}
+
+# --- Obsidian ---------------------------------------------------------------------
+
+function Get-ObsidianVault {
+    <# The vault folder (the one holding .obsidian) that contains Path, or $null. #>
+    param([Parameter(Mandatory)][string]$Path)
+    $dir = $Path
+    if (Test-Path -LiteralPath $dir -PathType Leaf) { $dir = Split-Path -Parent $dir }
+    while ($dir) {
+        if (Test-Path -LiteralPath (Join-Path $dir '.obsidian') -PathType Container) { return $dir }
+        $parent = Split-Path -Parent $dir
+        if ($parent -eq $dir) { break }
+        $dir = $parent
+    }
+    return $null
+}
+
+function Get-ObsidianUri {
+    <# obsidian:// link that opens a file in whichever vault holds it. #>
+    param([Parameter(Mandatory)][string]$Path)
+    return 'obsidian://open?path=' + [Uri]::EscapeDataString($Path)
+}
+
+function Set-FrontmatterValue {
+    <#
+        Sets "Name: Value" in a note's YAML frontmatter. Only changes a key that
+        is already there, so notes that never asked for it are left alone.
+        Returns whether it wrote.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][string]$Value
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    $utf8 = New-Object Text.UTF8Encoding $false
+    $text = [IO.File]::ReadAllText($Path, $utf8)
+    $m = [regex]::Match($text, '\A---\r?\n(.*?)\r?\n---[ \t]*(\r?\n|\z)', 'Singleline')
+    if (-not $m.Success) { return $false }
+    $body = $m.Groups[1].Value
+    $key = New-Object regex ('(?m)^' + [regex]::Escape($Name) + '[ \t]*:.*?(?=\r?$)')
+    if (-not $key.IsMatch($body)) { return $false }
+    $new = $key.Replace($body, "${Name}: $Value".Replace('$', '$$'), 1)
+    if ($new -ceq $body) { return $false }
+    $text = $text.Substring(0, $m.Groups[1].Index) + $new + $text.Substring($m.Groups[1].Index + $m.Groups[1].Length)
+    [IO.File]::WriteAllText($Path, $text, $utf8)
+    return $true
+}
+
 # --- Settings -------------------------------------------------------------------
 
 $script:DefaultSettings = [ordered]@{
@@ -111,6 +201,8 @@ $script:DefaultSettings = [ordered]@{
     extraTags      = @()
     watchClipboard = $true
     maxSlugLength  = 50
+    logFormat      = 'obsidian'
+    projectsFolder = ''
 }
 # Written by Initialize-ProjectLogSettings; keep in step with the defaults above.
 $script:DefaultSettingsJson = @'
@@ -119,9 +211,12 @@ $script:DefaultSettingsJson = @'
   "previewLines": 6,
   "extraTags": [],
   "watchClipboard": true,
-  "maxSlugLength": 50
+  "maxSlugLength": 50,
+  "logFormat": "obsidian",
+  "projectsFolder": ""
 }
 '@
+$script:LogFormats = @('obsidian', 'plain')
 
 function Test-SettingValue {
     <# Returns $null when a settings.json value is usable, otherwise why not. #>
@@ -132,6 +227,8 @@ function Test-SettingValue {
         'previewLines'   { if (-not $isInt -or $Value -lt 0 -or $Value -gt 20) { return 'should be a whole number from 0 to 20' } }
         'maxSlugLength'  { if (-not $isInt -or $Value -lt 10 -or $Value -gt 120) { return 'should be a whole number from 10 to 120' } }
         'watchClipboard' { if ($Value -isnot [bool]) { return 'should be true or false' } }
+        'logFormat'      { if ($script:LogFormats -notcontains $Value) { return 'should be "obsidian" or "plain"' } }
+        'projectsFolder' { if ($Value -isnot [string]) { return 'should be a folder path in quotes, with \\ for each backslash, or ""' } }
         'extraTags' {
             foreach ($t in @($Value)) {
                 if ($t -isnot [string] -or $t -notmatch '^\S+$') { return 'should be a list of single words, such as ["FLAG", "LOOT"]' }
@@ -169,7 +266,11 @@ function Get-ProjectLogSettings {
             if (-not $key) { $warnings += "settings.json: unknown setting '$($p.Name)' was ignored."; continue }
             $problem = Test-SettingValue -Name $key[0] -Value $p.Value
             if ($problem) { $warnings += "settings.json: $($key[0]) $problem; using $(ConvertTo-Json -Compress -InputObject $settings[$key[0]])."; continue }
-            $settings[$key[0]] = if ($key[0] -eq 'extraTags') { @($p.Value) } else { $p.Value }
+            $settings[$key[0]] = switch ($key[0]) {
+                'extraTags' { @($p.Value) }
+                'logFormat' { $p.Value.ToLowerInvariant() }
+                default     { $p.Value }
+            }
         }
     }
     $settings['Path'] = $path
@@ -277,20 +378,31 @@ function Get-UniquePath {
 
 function Add-ProofEntry {
     <#
-        Logs a PROOF line for an evidence file. Files inside the log's folder are
-        written relative to it with forward slashes, so they work as Markdown links.
+        Logs a PROOF line for an evidence file inside the log's folder: an
+        Obsidian embed (![[name.png]]) in an obsidian log, or the relative path
+        with forward slashes in a plain one. Evidence names carry the time, so
+        the bare file name is enough for Obsidian to find it. A file elsewhere
+        is logged with its full path.
     #>
     param(
         [Parameter(Mandatory)][string]$LogPath,
         [Parameter(Mandatory)][string]$Path,
-        [datetime]$When = (Get-Date)
+        [datetime]$When = (Get-Date),
+        [ValidateSet('obsidian', 'plain')][string]$DefaultFormat
     )
+    $format = Resolve-LogFormat -LogPath $LogPath -DefaultFormat $DefaultFormat
     $logDir = Split-Path -Parent $LogPath
     $shown = $Path
     if ($Path.StartsWith($logDir + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-        $shown = $Path.Substring($logDir.Length + 1) -replace '\\', '/'
+        if ($format -eq 'obsidian') {
+            $embed = if ([IO.Path]::GetExtension($Path) -match '^\.(png|jpe?g|gif|bmp|webp|svg)$') { '!' } else { '' }
+            $shown = "$embed[[$(Split-Path -Leaf $Path)]]"
+        }
+        else {
+            $shown = $Path.Substring($logDir.Length + 1) -replace '\\', '/'
+        }
     }
-    return Add-LogEntry -LogPath $LogPath -Tag 'PROOF' -Text $shown -When $When
+    return Add-LogEntry -LogPath $LogPath -Tag 'PROOF' -Text $shown -When $When -DefaultFormat $format
 }
 
 function Get-ImageHash {
@@ -361,15 +473,33 @@ function Get-UtcOffsetLabel {
 }
 
 function Format-LogEntry {
-    <# Builds the lines for one entry. -SameMinute blanks the time column. #>
+    <# Builds the lines for one entry. -SameMinute blanks the time column of a plain entry. #>
     param(
         [Parameter(Mandatory)][string]$Tag,
         [Parameter(Mandatory)][string]$Text,
         [Parameter(Mandatory)][datetime]$When,
-        [switch]$SameMinute
+        [switch]$SameMinute,
+        [ValidateSet('obsidian', 'plain')][string]$Format = 'plain'
     )
     $lines = @(($Text -replace "`r`n", "`n").Split("`n") | ForEach-Object { $_.TrimEnd() })
     while ($lines.Count -gt 1 -and -not $lines[-1]) { $lines = $lines[0..($lines.Count - 2)] }
+
+    if ($Format -eq 'obsidian') {
+        $out = @("- {0} **{1}** {2}" -f $When.ToString('HH:mm'), $Tag, $lines[0])
+        $rest = @($lines | Select-Object -Skip 1)
+        while ($rest.Count -and -not $rest[0]) { $rest = @($rest | Select-Object -Skip 1) }
+        if ($rest.Count) {
+            # Extra lines are usually pasted output: keep them verbatim in a code
+            # block nested under the item, with a fence longer than any inside.
+            $longest = 0
+            foreach ($m in [regex]::Matches(($rest -join "`n"), '`+')) { $longest = [Math]::Max($longest, $m.Length) }
+            $fence = '`' * [Math]::Max(3, $longest + 1)
+            $out += "  $fence"
+            foreach ($line in $rest) { $out += if ($line) { "  $line" } else { '' } }
+            $out += "  $fence"
+        }
+        return $out
+    }
 
     $time = if ($SameMinute) { '     ' } else { $When.ToString('HH:mm') }
     $out = @("{0} {1} {2}" -f $time, $Tag.PadRight($script:TagWidth), $lines[0])
@@ -379,19 +509,47 @@ function Format-LogEntry {
     return $out
 }
 
+function Find-LogFormat {
+    <# 'obsidian' or 'plain' from the last stamped entry in a log's text, or $null if it has none. #>
+    param([string]$Text)
+    $lines = ($Text -replace "`r`n", "`n").Split("`n")
+    for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+        if ($lines[$i] -match '^- \d{2}:\d{2} ') { return 'obsidian' }
+        if ($lines[$i] -match '^\d{2}:\d{2} ') { return 'plain' }
+    }
+    return $null
+}
+
+function Resolve-LogFormat {
+    <# The format to write a log in: its own if it has entries, else DefaultFormat, else the logFormat setting. #>
+    param([Parameter(Mandatory)][string]$LogPath, [string]$DefaultFormat)
+    if (Test-Path -LiteralPath $LogPath) {
+        $found = Find-LogFormat -Text ([IO.File]::ReadAllText($LogPath, (New-Object Text.UTF8Encoding $false)))
+        if ($found) { return $found }
+    }
+    if ($DefaultFormat) { return $DefaultFormat }
+    return (Get-ProjectLogSettings).logFormat
+}
+
 function Add-LogEntry {
     <#
         Appends one entry to a log file, adding a date heading when the day changes.
-        Returns the text that was written.
+        The entry follows the log's existing format; DefaultFormat (or the
+        logFormat setting) is only used for a log with no entries yet.
+        On a new day it also sets "updated:" in the README beside the log, if
+        its frontmatter has one. Returns the text that was written.
     #>
     param(
         [Parameter(Mandatory)][string]$LogPath,
         [Parameter(Mandatory)][string]$Tag,
         [Parameter(Mandatory)][string]$Text,
-        [datetime]$When = (Get-Date)
+        [datetime]$When = (Get-Date),
+        [ValidateSet('obsidian', 'plain')][string]$DefaultFormat
     )
     $utf8 = New-Object Text.UTF8Encoding $false
     $existing = if (Test-Path -LiteralPath $LogPath) { [IO.File]::ReadAllText($LogPath, $utf8) } else { '' }
+    $format = Find-LogFormat -Text $existing
+    if (-not $format) { $format = if ($DefaultFormat) { $DefaultFormat } else { (Get-ProjectLogSettings).logFormat } }
 
     # Find the last date heading, and the last stamped time under it.
     $lastDate = $null
@@ -399,7 +557,7 @@ function Add-LogEntry {
     foreach ($line in ($existing -replace "`r`n", "`n").Split("`n")) {
         $h = [regex]::Match($line, '^## (\d{4}-\d{2}-\d{2})')
         if ($h.Success) { $lastDate = $h.Groups[1].Value; $lastStamp = $null; continue }
-        $t = [regex]::Match($line, '^(\d{2}:\d{2}) ')
+        $t = [regex]::Match($line, '^(?:- )?(\d{2}:\d{2}) ')
         if ($t.Success) { $lastStamp = $t.Groups[1].Value }
     }
 
@@ -408,7 +566,8 @@ function Add-LogEntry {
     if ($existing -and -not $existing.EndsWith("`n")) { [void]$sb.Append([Environment]::NewLine) }
 
     $sameMinute = $false
-    if ($lastDate -ne $today) {
+    $newDay = $lastDate -ne $today
+    if ($newDay) {
         # One blank line before the heading; New-Project's log.md already ends with one.
         $endsBlank = ($existing -replace "`r`n", "`n").EndsWith("`n`n")
         if ($existing.Trim() -and -not $endsBlank) { [void]$sb.Append([Environment]::NewLine) }
@@ -418,14 +577,73 @@ function Add-LogEntry {
         $sameMinute = $true
     }
 
-    foreach ($line in (Format-LogEntry -Tag $Tag -Text $Text -When $When -SameMinute:$sameMinute)) {
+    foreach ($line in (Format-LogEntry -Tag $Tag -Text $Text -When $When -SameMinute:$sameMinute -Format $format)) {
         [void]$sb.Append($line).Append([Environment]::NewLine)
     }
 
     $dir = Split-Path -Parent $LogPath
     if ($dir) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     [IO.File]::AppendAllText($LogPath, $sb.ToString(), $utf8)
+
+    if ($newDay -and $dir) {
+        # Feeds the dashboard's last-activity column. The entry is already safe,
+        # so a README that's locked or odd never fails the log.
+        try { [void](Set-FrontmatterValue -Path (Join-Path $dir 'README.md') -Name 'updated' -Value $today) } catch { }
+    }
     return $sb.ToString()
+}
+
+function ConvertTo-ObsidianLog {
+    <#
+        Rewrites a plain-format log's text in the obsidian format. Headings and
+        any other lines are kept; PROOF paths to images become embeds when
+        -ProjectRoot is given and the file is there.
+    #>
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text, [string]$ProjectRoot)
+    $lines = ($Text -replace "`r`n", "`n").Split("`n")
+    $out = New-Object Collections.Generic.List[string]
+    $entry = $null
+    $time = '00:00'
+    $flush = {
+        if ($entry) {
+            # Blank lines after an entry separate it from what follows; keep them outside the entry.
+            $trailing = 0
+            while ($entry.Lines.Count -gt 1 -and -not $entry.Lines[-1]) {
+                $entry.Lines = @($entry.Lines | Select-Object -First ($entry.Lines.Count - 1))
+                $trailing++
+            }
+            $when = [datetime]::ParseExact($entry.Time, 'HH:mm', [Globalization.CultureInfo]::InvariantCulture)
+            $text = $entry.Lines -join "`n"
+            if ($entry.Tag -eq 'PROOF' -and $ProjectRoot -and $entry.Lines.Count -eq 1) {
+                $file = Join-Path $ProjectRoot ($text -replace '/', '\')
+                if ($text -notmatch '^[A-Za-z]:|^\\\\' -and (Test-Path -LiteralPath $file -PathType Leaf)) {
+                    $embed = if ($text -match '\.(png|jpe?g|gif|bmp|webp|svg)$') { '!' } else { '' }
+                    $text = "$embed[[$(Split-Path -Leaf $file)]]"
+                }
+            }
+            foreach ($l in (Format-LogEntry -Tag $entry.Tag -Text $text -When $when -Format obsidian)) { $out.Add($l) }
+            for ($i = 0; $i -lt $trailing; $i++) { $out.Add('') }
+        }
+    }
+    foreach ($line in $lines) {
+        $m = [regex]::Match($line, '^(\d{2}:\d{2}| {5}) (\S+) +(.*)$')
+        if ($m.Success -and $m.Groups[2].Value -cmatch '^[A-Z]+$') {
+            . $flush
+            if ($m.Groups[1].Value.Trim()) { $time = $m.Groups[1].Value }
+            $entry = @{ Time = $time; Tag = $m.Groups[2].Value; Lines = @($m.Groups[3].Value) }
+            continue
+        }
+        if ($entry -and ($line.StartsWith($script:Indent) -or -not $line.Trim())) {
+            $entry.Lines += if ($line.Trim()) { $line.Substring($script:Indent.Length) } else { '' }
+            continue
+        }
+        . $flush
+        $entry = $null
+        if ($line -match '^## \d{4}-\d{2}-\d{2}') { $time = '00:00' }
+        $out.Add($line)
+    }
+    . $flush
+    return ($out -join "`n")
 }
 
 function Get-LogTail {
@@ -436,6 +654,8 @@ function Get-LogTail {
 }
 
 Export-ModuleMember -Function Get-ProjectLogStatePath, Get-ActiveProject, Set-ActiveProject, Get-RecentProjects, Get-ProjectPaths,
+    Get-ProjectFolders, Get-ProjectChoices, Get-ObsidianVault, Get-ObsidianUri, Set-FrontmatterValue,
     Get-ProjectLogSettings, Initialize-ProjectLogSettings, Enter-ClipboardWatch, Exit-ClipboardWatch,
     ConvertTo-Slug, Get-EvidenceName, Get-UniquePath, Add-ProofEntry, Get-ImageHash,
-    Get-KnownLogTags, Get-LogTagHelp, Split-LogInput, Format-LogEntry, Add-LogEntry, Get-LogTail
+    Get-KnownLogTags, Get-LogTagHelp, Split-LogInput, Format-LogEntry, Find-LogFormat, Resolve-LogFormat,
+    Add-LogEntry, ConvertTo-ObsidianLog, Get-LogTail

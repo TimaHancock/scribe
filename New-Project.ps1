@@ -4,9 +4,16 @@
     Authors: Claude and Tima
 
 .DESCRIPTION
-    Asks for a project slug, a type module and a location (a folder picker
-    pops up), then builds the folder tree for that module with a kickoff-card
-    README.md and an empty log.md. The folder is named YYYY-MM-<slug>.
+    Asks for a project slug and a type module, then builds the folder tree for
+    that module with a kickoff-card README.md and an empty log.md. The folder
+    is named YYYY-MM-<slug> and goes in projectsFolder from settings.json, or
+    wherever you pick when that isn't set.
+
+    The kickoff card, the academic kickoff additions and the runbook procedure
+    come from documentation-playbook\, so a template is edited in one place.
+    The README gets frontmatter (type, status, module, started, updated) for
+    Obsidian. When the parent folder is inside an Obsidian vault and has no
+    .base file yet, Projects.base is copied there as a dashboard of projects.
 
     Module trees match the Project directory section of each type module:
       Core       the core layout, for anything without a module
@@ -24,7 +31,8 @@
     lowercase-hyphen form. Prompted for if omitted.
 
 .PARAMETER Path
-    Parent folder to create the project in. A folder picker opens if omitted.
+    Parent folder to create the project in. Defaults to projectsFolder in
+    settings.json; a folder picker opens if that isn't set either.
 
 .PARAMETER Module
     Which layout to build. Prompted for if omitted.
@@ -104,48 +112,35 @@ $moduleNames = @{
     Core = 'none'; ITProject = 'IT project'; Runbook = 'Runbook or SOP'
     TechEval = 'Technology evaluation'; Academic = 'Academic assessment'; Capstone = 'Academic assessment (capstone)'
 }
+$playbook = Join-Path $PSScriptRoot 'documentation-playbook'
 
-function Get-KickoffCard([string]$ModuleName) {
-@"
-# <Outcome-oriented title, e.g. "Cut report prep from 2 hours to 10 minutes">
-Started: $($today.ToString('yyyy-MM-dd')) · Status: planning · Type module: $ModuleName
-
-## Goal
-One sentence: what will be true when this is done?
-
-## Reader
-Who will read the writeup, and what should they be able to decide or do afterward?
-
-## Done means
-- A success criterion with a number or an observable state
-
-## Scope
-In: ...
-Out (non-goals): ... and why
-
-## Story question
-The one question the writeup will answer.
-
-## Baseline
-The current state and how you measured it. Save before-numbers and screenshots now.
-
-## Constraints and permissions
-Authorization, data-handling rules, platform rules, NDA, time box.
-"@
+function Get-PlaybookTemplate {
+    <#
+        The first ```markdown block in a playbook file, after the line Heading
+        when one is given. Read as UTF-8, so the playbook's own characters
+        survive Windows PowerShell's ANSI default.
+    #>
+    param([Parameter(Mandatory)][string]$File, [string]$Heading)
+    $path = Join-Path $playbook $File
+    if (-not (Test-Path -LiteralPath $path)) { throw "Playbook template not found: $path" }
+    $lines = [IO.File]::ReadAllLines($path, $utf8)
+    $i = 0
+    if ($Heading) {
+        while ($i -lt $lines.Count -and $lines[$i].Trim() -ne $Heading) { $i++ }
+    }
+    while ($i -lt $lines.Count -and $lines[$i] -notmatch '^(`{3,})markdown\s*$') { $i++ }
+    if ($i -ge $lines.Count) { throw "No markdown block$(if ($Heading) { " after '$Heading'" }) in $path" }
+    $fence = $Matches[1]
+    $block = for ($j = $i + 1; $j -lt $lines.Count -and $lines[$j] -ne $fence; $j++) { $lines[$j] }
+    return (@($block) -join "`n") + "`n"
 }
 
-$academicKickoff = @"
-
-## Assessment
-Course and task: ...
-Rubric version or date: ...
-Due date: ...
-Submission format and length limits: ...
-Required artifacts: ...
-Citation style: ...
-AI-use rule: ...
-Publishing rule: ...
-"@
+function Get-KickoffCard([string]$ModuleName) {
+    $card = Get-PlaybookTemplate 'templates\01-kickoff-card.md'
+    $date = $today.ToString('yyyy-MM-dd')
+    $card = $card -replace '(?m)^(started|updated): YYYY-MM-DD', "`$1: $date"
+    return $card -replace '(?m)^module: <[^>\r\n]*>', "module: $ModuleName"
+}
 
 $matrix = @"
 # Rubric traceability matrix
@@ -160,38 +155,6 @@ $citations = @"
 
 | Source | Author or organization | Date | URL | Accessed | Used for |
 | --- | --- | --- | --- | --- | --- |
-"@
-
-$procedure = @"
-# <Verb> <object>
-Owner: <role> · Last tested: YYYY-MM-DD by <name> · Review by: YYYY-MM-DD
-Applies to: <system, environment>
-
-## When to use
-The trigger (ticket type, alert name, schedule). When NOT to use it.
-
-## Before you start
-Role or permissions needed · tools · time estimate · user impact · approvals
-Variables: <EXAMPLE_VARIABLE>
-
-## Steps
-1. One action per step, imperative verb first.
-   Expected result: what you should see.
-
-## Verify
-How you know it worked: a check and its expected output.
-
-## If something goes wrong
-Rollback steps, and the conditions that mean stop and escalate.
-
-## Escalation
-Who, how to reach them, and when.
-
-## Records
-What to note in the ticket or log.
-
-## Change history
-$($today.ToString('yyyy-MM-dd')) · First draft · <author>
 "@
 
 # --- Layouts: folders, then files (relative path => content) ------------------
@@ -210,7 +173,7 @@ function Get-Layout([string]$Name, [int]$TaskCount) {
         }
         'Runbook' {
             @{ Folders = @('evidence/runs', 'evidence/screenshots', 'evidence/terminal', 'scripts', 'publish')
-               Files   = @{ 'procedure.md' = $procedure } }
+               Files   = @{ 'procedure.md' = (Get-PlaybookTemplate 'type-modules\runbook-or-sop.md' -Heading '## Template changes') } }
         }
         'TechEval' {
             @{ Folders = @('options/option-a/docs', 'options/option-b/docs', 'options/do-nothing', 'poc') + $evidence +
@@ -257,7 +220,11 @@ if ($Module -eq 'Capstone' -and -not $Tasks) {
     $Tasks = if ($answer) { [int]$answer } else { 3 }
 }
 
-if (-not $Path) { $Path = Select-ParentFolder }
+if (-not $Path) {
+    $projectsFolder = (Get-ProjectLogSettings).projectsFolder
+    if ($projectsFolder -and (Test-Path -LiteralPath $projectsFolder -PathType Container)) { $Path = $projectsFolder }
+    else { $Path = Select-ParentFolder }
+}
 if (-not $Path) { Write-Host 'Cancelled.'; return }
 if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "Parent folder not found: $Path" }
 
@@ -268,7 +235,16 @@ if (Test-Path -LiteralPath $root) { throw "Already exists, nothing changed: $roo
 
 $layout = Get-Layout -Name $Module -TaskCount $Tasks
 $readme = Get-KickoffCard $moduleNames[$Module]
-if ($Module -in 'Academic', 'Capstone') { $readme += $academicKickoff }
+if ($Module -in 'Academic', 'Capstone') {
+    $readme += "`n" + (Get-PlaybookTemplate 'type-modules\academic-assessment.md' -Heading '### Kickoff card additions')
+}
+
+# A projects dashboard for the vault, unless this folder already has a .base file.
+$parent = Split-Path -Parent $root
+$dashboard = $null
+if ((Get-ObsidianVault -Path $parent) -and -not (Get-ChildItem -LiteralPath $parent -Filter '*.base' -File)) {
+    $dashboard = Join-Path $parent 'Projects.base'
+}
 
 $files = @{
     'README.md' = $readme
@@ -294,6 +270,10 @@ if ($PSCmdlet.ShouldProcess($root, "Create $Module project")) {
     [IO.File]::WriteAllText($lastParent, (Split-Path -Parent $root), $utf8)
 
     Write-Host "Created $Module project: $root" -ForegroundColor Green
+    if ($dashboard) {
+        Copy-Item -LiteralPath (Join-Path $playbook 'templates\projects.base') -Destination $dashboard
+        Write-Host "Added a projects dashboard for Obsidian: $dashboard"
+    }
 
     $makeActive = $SetActive
     if (-not $makeActive) {
@@ -306,4 +286,5 @@ else {
     # -WhatIf: show what would be built.
     Write-Host "Would create: $root"
     ($layout.Folders + $files.Keys) | Sort-Object | ForEach-Object { Write-Host "  $_" }
+    if ($dashboard) { Write-Host "Would add the projects dashboard: $dashboard" }
 }

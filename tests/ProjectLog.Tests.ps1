@@ -105,27 +105,27 @@ Describe 'Format-LogEntry' {
     }
 }
 
-Describe 'Add-LogEntry' {
+Describe 'Add-LogEntry, plain format' {
     BeforeEach { $script:log = Join-Path $TestDrive "log-$([guid]::NewGuid()).md" }
 
     It 'creates the log with a date heading' {
-        Add-LogEntry -LogPath $log -Tag 'TRY' -Text 'First' -When ([datetime]'2026-10-26 14:32') | Out-Null
+        Add-LogEntry -DefaultFormat plain -LogPath $log -Tag 'TRY' -Text 'First' -When ([datetime]'2026-10-26 14:32') | Out-Null
         $lines = Get-Content -LiteralPath $log
         $lines[0] | Should -Match '^## 2026-10-26 \(times local, UTC[+-]\d+(:\d{2})?\)$'
         $lines[1] | Should -Be '14:32 TRY      First'
     }
     It 'adds no heading for the same day and blanks a repeated minute' {
-        Add-LogEntry -LogPath $log -Tag 'TRY' -Text 'One' -When ([datetime]'2026-10-26 14:32') | Out-Null
-        Add-LogEntry -LogPath $log -Tag 'SAW' -Text 'Two' -When ([datetime]'2026-10-26 14:32') | Out-Null
-        Add-LogEntry -LogPath $log -Tag 'FIX' -Text 'Three' -When ([datetime]'2026-10-26 14:47') | Out-Null
+        Add-LogEntry -DefaultFormat plain -LogPath $log -Tag 'TRY' -Text 'One' -When ([datetime]'2026-10-26 14:32') | Out-Null
+        Add-LogEntry -DefaultFormat plain -LogPath $log -Tag 'SAW' -Text 'Two' -When ([datetime]'2026-10-26 14:32') | Out-Null
+        Add-LogEntry -DefaultFormat plain -LogPath $log -Tag 'FIX' -Text 'Three' -When ([datetime]'2026-10-26 14:47') | Out-Null
         $lines = Get-Content -LiteralPath $log
         $lines.Count | Should -Be 4
         $lines[2] | Should -Be '      SAW      Two'
         $lines[3] | Should -Be '14:47 FIX      Three'
     }
     It 'starts a new heading after one blank line when the day changes' {
-        Add-LogEntry -LogPath $log -Tag 'TRY' -Text 'One' -When ([datetime]'2026-10-26 23:59') | Out-Null
-        Add-LogEntry -LogPath $log -Tag 'TRY' -Text 'Two' -When ([datetime]'2026-10-27 00:01') | Out-Null
+        Add-LogEntry -DefaultFormat plain -LogPath $log -Tag 'TRY' -Text 'One' -When ([datetime]'2026-10-26 23:59') | Out-Null
+        Add-LogEntry -DefaultFormat plain -LogPath $log -Tag 'TRY' -Text 'Two' -When ([datetime]'2026-10-27 00:01') | Out-Null
         $lines = Get-Content -LiteralPath $log
         $lines[2] | Should -Be ''
         $lines[3] | Should -Match '^## 2026-10-27 '
@@ -133,7 +133,7 @@ Describe 'Add-LogEntry' {
     }
     It "doesn't double the blank line after New-Project's title" {
         [IO.File]::WriteAllText($log, "# Running log: x$nl$nl")
-        Add-LogEntry -LogPath $log -Tag 'TRY' -Text 'One' -When ([datetime]'2026-10-26 14:32') | Out-Null
+        Add-LogEntry -DefaultFormat plain -LogPath $log -Tag 'TRY' -Text 'One' -When ([datetime]'2026-10-26 14:32') | Out-Null
         $lines = Get-Content -LiteralPath $log
         $lines[0] | Should -Be '# Running log: x'
         $lines[1] | Should -Be ''
@@ -141,13 +141,13 @@ Describe 'Add-LogEntry' {
     }
     It 'adds a line break when the file does not end with one' {
         [IO.File]::WriteAllText($log, "## 2026-10-26 (times local, UTC-4)${nl}14:00 TRY      One")
-        Add-LogEntry -LogPath $log -Tag 'FIX' -Text 'Two' -When ([datetime]'2026-10-26 14:05') | Out-Null
+        Add-LogEntry -DefaultFormat plain -LogPath $log -Tag 'FIX' -Text 'Two' -When ([datetime]'2026-10-26 14:05') | Out-Null
         $lines = Get-Content -LiteralPath $log
         $lines.Count | Should -Be 3
         $lines[2] | Should -Be '14:05 FIX      Two'
     }
     It 'writes UTF-8 without a BOM' {
-        Add-LogEntry -LogPath $log -Tag 'TRY' -Text 'One' | Out-Null
+        Add-LogEntry -DefaultFormat plain -LogPath $log -Tag 'TRY' -Text 'One' | Out-Null
         $bytes = [IO.File]::ReadAllBytes($log)
         $bytes[0] | Should -Be ([byte][char]'#')
     }
@@ -208,7 +208,15 @@ Describe 'Get-ProjectLogSettings' {
         $s.logHotkey | Should -Be 'Ctrl+Alt+L'
         $s.previewLines | Should -Be 6
         $s.watchClipboard | Should -BeTrue
+        $s.logFormat | Should -Be 'obsidian'
+        $s.projectsFolder | Should -Be ''
         @($s.Warnings).Count | Should -Be 0
+    }
+    It 'rejects an unknown log format' {
+        Set-Content -LiteralPath $settingsPath -Value '{ "logFormat": "html" }'
+        $s = Get-ProjectLogSettings
+        $s.logFormat | Should -Be 'obsidian'
+        $s.Warnings | Should -Match 'logFormat should be "obsidian" or "plain"'
     }
     It 'writes a default file that reads back with no warnings' {
         Initialize-ProjectLogSettings | Should -Be $settingsPath
@@ -278,17 +286,185 @@ Describe 'Evidence files' {
         Get-UniquePath -Dir $dir -Base 'x' | Should -Be (Join-Path $dir 'x-3.png')
         Get-UniquePath -Dir $dir -Base 'x' -Extension 'txt' | Should -Be (Join-Path $dir 'x.txt')
     }
-    It 'logs a file inside the project relative to the log' {
+    It 'logs a file inside the project relative to the log (plain)' {
         $root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'proof-in')).FullName
         $log = Join-Path $root 'log.md'
-        [void](Add-ProofEntry -LogPath $log -Path (Join-Path $root 'evidence\screenshots\a.png') -When $when)
+        [void](Add-ProofEntry -DefaultFormat plain -LogPath $log -Path (Join-Path $root 'evidence\screenshots\a.png') -When $when)
         (Get-Content -LiteralPath $log)[1] | Should -Be '14:32 PROOF    evidence/screenshots/a.png'
     }
     It 'logs a file outside the project with its full path' {
         $root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'proof-out')).FullName
         $log = Join-Path $root 'log.md'
-        [void](Add-ProofEntry -LogPath $log -Path 'D:\elsewhere\a.png' -When $when)
+        [void](Add-ProofEntry -DefaultFormat plain -LogPath $log -Path 'D:\elsewhere\a.png' -When $when)
         (Get-Content -LiteralPath $log)[1] | Should -Be '14:32 PROOF    D:\elsewhere\a.png'
+    }
+    It 'embeds an image and links other files by name in an obsidian log' {
+        $root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'proof-obs')).FullName
+        $log = Join-Path $root 'log.md'
+        [void](Add-ProofEntry -DefaultFormat obsidian -LogPath $log -Path (Join-Path $root 'evidence\screenshots\a.png') -When $when)
+        [void](Add-ProofEntry -LogPath $log -Path (Join-Path $root 'evidence\terminal\b.txt') -When $when)
+        [void](Add-ProofEntry -LogPath $log -Path 'D:\elsewhere\c.png' -When $when)
+        $lines = Get-Content -LiteralPath $log
+        $lines[1] | Should -Be '- 14:32 **PROOF** ![[a.png]]'
+        $lines[2] | Should -Be '- 14:32 **PROOF** [[b.txt]]'
+        $lines[3] | Should -Be '- 14:32 **PROOF** D:\elsewhere\c.png'
+    }
+}
+
+Describe 'Format-LogEntry, obsidian format' {
+    BeforeAll { $script:when = [datetime]'2026-10-26 14:32' }
+
+    It 'writes a list item with the tag in bold' {
+        Format-LogEntry -Tag 'TRY' -Text 'Pointed the proxy' -When $when -Format obsidian |
+            Should -Be '- 14:32 **TRY** Pointed the proxy'
+    }
+    It 'stamps every entry, even in the same minute' {
+        Format-LogEntry -Tag 'SAW' -Text '502' -When $when -SameMinute -Format obsidian |
+            Should -Be '- 14:32 **SAW** 502'
+    }
+    It 'puts extra lines in a nested code block, trimming blank lines around them' {
+        $lines = Format-LogEntry -Tag 'SAW' -Text "502 Bad Gateway`n`nconnect() failed   `n`n    indented`n`n" -When $when -Format obsidian
+        $lines | Should -Be @(
+            '- 14:32 **SAW** 502 Bad Gateway'
+            '  ```'
+            '  connect() failed'
+            ''
+            '      indented'
+            '  ```'
+        )
+    }
+    It 'uses a longer fence when the text holds one' {
+        $lines = Format-LogEntry -Tag 'SAW' -Text "Readme says`n``````powershell`nGet-Thing`n``````" -When $when -Format obsidian
+        $lines[1] | Should -Be '  ````'
+        $lines[-1] | Should -Be '  ````'
+    }
+}
+
+Describe 'Add-LogEntry, obsidian format' {
+    BeforeEach { $script:log = Join-Path $TestDrive "log-$([guid]::NewGuid()).md" }
+
+    It 'writes a new log in the default format and stamps a repeated minute' {
+        Add-LogEntry -DefaultFormat obsidian -LogPath $log -Tag 'TRY' -Text 'One' -When ([datetime]'2026-10-26 14:32') | Out-Null
+        Add-LogEntry -LogPath $log -Tag 'SAW' -Text 'Two' -When ([datetime]'2026-10-26 14:32') | Out-Null
+        $lines = Get-Content -LiteralPath $log
+        $lines[0] | Should -Match '^## 2026-10-26 '
+        $lines[1] | Should -Be '- 14:32 **TRY** One'
+        $lines[2] | Should -Be '- 14:32 **SAW** Two'
+    }
+    It 'keeps a plain log plain whatever the default' {
+        Add-LogEntry -DefaultFormat plain -LogPath $log -Tag 'TRY' -Text 'One' -When ([datetime]'2026-10-26 14:32') | Out-Null
+        Add-LogEntry -DefaultFormat obsidian -LogPath $log -Tag 'FIX' -Text 'Two' -When ([datetime]'2026-10-26 14:40') | Out-Null
+        (Get-Content -LiteralPath $log)[2] | Should -Be '14:40 FIX      Two'
+    }
+    It 'uses the logFormat setting when no default is given' {
+        New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+        Set-Content -LiteralPath (Join-Path $stateDir 'settings.json') -Value '{ "logFormat": "Plain" }'
+        try {
+            Add-LogEntry -LogPath $log -Tag 'TRY' -Text 'One' -When ([datetime]'2026-10-26 14:32') | Out-Null
+            (Get-Content -LiteralPath $log)[1] | Should -Be '14:32 TRY      One'
+        }
+        finally { Remove-Item -LiteralPath (Join-Path $stateDir 'settings.json') }
+    }
+    It 'detects the format from the last entry' {
+        Find-LogFormat -Text "# Running log`n`n" | Should -BeNullOrEmpty
+        Find-LogFormat -Text "## 2026-10-26`n14:32 TRY      One`n               more" | Should -Be 'plain'
+        Find-LogFormat -Text "## 2026-10-26`n- 14:32 **TRY** One`n  ``````" | Should -Be 'obsidian'
+    }
+}
+
+Describe 'Project activity in README frontmatter' {
+    BeforeEach {
+        $script:root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive "act-$([guid]::NewGuid())")).FullName
+        $script:readme = Join-Path $root 'README.md'
+    }
+
+    It 'sets updated when the log starts a new day' {
+        [IO.File]::WriteAllText($readme, "---`r`ntype: project`r`nupdated: 2026-01-01`r`n---`r`n# Title`r`n")
+        Add-LogEntry -DefaultFormat obsidian -LogPath (Join-Path $root 'log.md') -Tag 'TRY' -Text 'One' -When ([datetime]'2026-10-26 14:32') | Out-Null
+        [IO.File]::ReadAllText($readme) | Should -Be "---`r`ntype: project`r`nupdated: 2026-10-26`r`n---`r`n# Title`r`n"
+    }
+    It 'leaves a README without the key alone' {
+        $text = "---`ntype: project`n---`n# Title`n"
+        [IO.File]::WriteAllText($readme, $text)
+        Set-FrontmatterValue -Path $readme -Name 'updated' -Value '2026-10-26' | Should -BeFalse
+        [IO.File]::ReadAllText($readme) | Should -Be $text
+    }
+    It 'leaves a README without frontmatter alone' {
+        [IO.File]::WriteAllText($readme, "# Title`nupdated: 2020-01-01`n")
+        Set-FrontmatterValue -Path $readme -Name 'updated' -Value '2026-10-26' | Should -BeFalse
+    }
+    It 'only changes the frontmatter' {
+        [IO.File]::WriteAllText($readme, "---`nupdated:`n---`nupdated: body`n")
+        Set-FrontmatterValue -Path $readme -Name 'updated' -Value '2026-10-26' | Should -BeTrue
+        [IO.File]::ReadAllText($readme) | Should -Be "---`nupdated: 2026-10-26`n---`nupdated: body`n"
+    }
+}
+
+Describe 'ConvertTo-ObsidianLog' {
+    It 'converts entries and keeps headings, blank lines and other text' {
+        $root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'conv')).FullName
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'evidence\screenshots') | Out-Null
+        New-Item -ItemType File -Force -Path (Join-Path $root 'evidence\screenshots\x.png') | Out-Null
+        $plain = @(
+            '# Running log: conv'
+            ''
+            '## 2026-10-26 (times local, UTC-4)'
+            '14:32 TRY      Pointed the proxy at 8080'
+            '      SAW      502 Bad Gateway'
+            '               connect() failed'
+            '      PROOF    evidence/screenshots/x.png'
+            '      PROOF    evidence/terminal/missing.txt'
+            ''
+            '## 2026-10-27 (times local, UTC-4)'
+            '09:00 FIX      Works'
+            ''
+        ) -join "`n"
+        $out = (ConvertTo-ObsidianLog -Text $plain -ProjectRoot $root).Split("`n")
+        $out | Should -Be @(
+            '# Running log: conv'
+            ''
+            '## 2026-10-26 (times local, UTC-4)'
+            '- 14:32 **TRY** Pointed the proxy at 8080'
+            '- 14:32 **SAW** 502 Bad Gateway'
+            '  ```'
+            '  connect() failed'
+            '  ```'
+            '- 14:32 **PROOF** ![[x.png]]'
+            '- 14:32 **PROOF** evidence/terminal/missing.txt'
+            ''
+            '## 2026-10-27 (times local, UTC-4)'
+            '- 09:00 **FIX** Works'
+            ''
+        )
+    }
+}
+
+Describe 'Projects folder and Obsidian' {
+    BeforeAll {
+        $script:vault = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'vault')).FullName
+        New-Item -ItemType Directory -Force -Path (Join-Path $vault '.obsidian') | Out-Null
+        foreach ($n in 'old', 'new', 'notes') { New-Item -ItemType Directory -Force -Path (Join-Path $vault $n) | Out-Null }
+        Set-Content -LiteralPath (Join-Path $vault 'old\log.md') -Value 'x'
+        Set-Content -LiteralPath (Join-Path $vault 'new\log.md') -Value 'x'
+        (Get-Item -LiteralPath (Join-Path $vault 'old\log.md')).LastWriteTimeUtc = [datetime]'2026-01-01'
+    }
+
+    It 'lists folders with a log.md, most recently logged first' {
+        Get-ProjectFolders -Path $vault | Should -Be @((Join-Path $vault 'new'), (Join-Path $vault 'old'))
+        @(Get-ProjectFolders -Path '').Count | Should -Be 0
+        @(Get-ProjectFolders -Path (Join-Path $vault 'nope')).Count | Should -Be 0
+    }
+    It 'puts recent projects first without duplicates' {
+        Remove-Item -LiteralPath $stateDir -Recurse -Force -ErrorAction SilentlyContinue
+        [void](Set-ActiveProject (Join-Path $vault 'old'))
+        Get-ProjectChoices -ProjectsFolder $vault | Should -Be @((Join-Path $vault 'old'), (Join-Path $vault 'new'))
+    }
+    It 'finds the vault that holds a file' {
+        Get-ObsidianVault -Path (Join-Path $vault 'old\log.md') | Should -Be $vault
+        Get-ObsidianVault -Path $TestDrive | Should -BeNullOrEmpty
+    }
+    It 'builds an obsidian:// link from the full path' {
+        Get-ObsidianUri -Path 'C:\my vault\p\log.md' | Should -Be 'obsidian://open?path=C%3A%5Cmy%20vault%5Cp%5Clog.md'
     }
 }
 

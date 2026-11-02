@@ -1,0 +1,35 @@
+filters:
+  and:
+    - file.name == "README"
+    - type == "project"
+formulas:
+  project: file.asLink(file.folder)
+properties:
+  formula.project:
+    displayName: Project
+views:
+  - type: table
+    name: Active
+    filters:
+      and:
+        - status != "done"
+    order:
+      - formula.project
+      - status
+      - module
+      - started
+      - updated
+    sort:
+      - property: updated
+        direction: DESC
+  - type: table
+    name: All projects
+    order:
+      - formula.project
+      - status
+      - module
+      - started
+      - updated
+    sort:
+      - property: updated
+        direction: DESC

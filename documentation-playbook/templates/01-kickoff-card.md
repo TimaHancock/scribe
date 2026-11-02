@@ -2,9 +2,17 @@
 
 Fill this in before you start. It becomes the top of the project README and the seed of the final summary.
 
+The block between the `---` lines is frontmatter: Obsidian shows it as properties, and the projects dashboard ([projects.base](projects.base)) lists every README with `type: project`. Move `status` through planning, active, paused and done as the work goes. `New-Project.ps1` fills in the dates and module, and Scribe sets `updated` on each day you log.
+
 ```markdown
+---
+type: project
+status: planning
+module: <none, or module name>
+started: YYYY-MM-DD
+updated: YYYY-MM-DD
+---
 # <Outcome-oriented title, e.g. "Cut report prep from 2 hours to 10 minutes">
-Started: YYYY-MM-DD · Status: planning · Type module: <none, or module name>
 
 ## Goal
 One sentence: what will be true when this is done?

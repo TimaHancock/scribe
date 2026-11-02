@@ -54,7 +54,7 @@ if the PowerShell ceiling is reached.
 
 ## Phase 2: Obsidian-native output
 
-- A log format option (`plain` or `obsidian`). The Obsidian format renders well
+- [x] A log format option (`plain` or `obsidian`). The Obsidian format renders well
   and stays easy to grep:
 
   ````markdown
@@ -67,17 +67,20 @@ if the PowerShell ceiling is reached.
   - 14:33 **PROOF** ![[2026-10-26_1433_proxy-502.png]]
   ````
 
-  The playbook's running-log template and the parser change together. A
-  converter for old logs is easy to write either way.
-- Projects live inside the vault; the project picker lists the folders under
-  `<vault>/Projects/`.
-- README frontmatter (`status`, `module`, `started`, `type`) written by
-  `New-Project.ps1`, so an Obsidian Bases dashboard can show every project with
-  its status and last activity.
-- "Open in Obsidian" from the tray using `obsidian://open?vault=...&file=...`
+  `obsidian` is the default for new logs; a log keeps the format of its
+  existing entries. The playbook's running-log template changed with it, and
+  `Convert-Log.ps1` converts old logs.
+- [x] Projects live inside the vault: `projectsFolder` in settings.json, and
+  the project pickers list its folders that have a `log.md`.
+- [x] README frontmatter (`type`, `status`, `module`, `started`, `updated`)
+  from the kickoff card template. Scribe sets `updated` each day you log, and
+  `Projects.base` (an Obsidian Bases dashboard) shows every project with its
+  status and last activity.
+- [x] "Open log in Obsidian" from the tray using `obsidian://open?path=...`
   URIs, instead of opening `log.md` in Notepad.
-- `New-Project.ps1` reads `documentation-playbook/templates/` instead of copies
-  pasted into the script, so a template is edited in one place.
+- [x] `New-Project.ps1` reads `documentation-playbook/templates/` and the type
+  modules instead of copies pasted into the script, so a template is edited in
+  one place.
 
 ## Phase 3: More ways to capture, each one keystroke
 

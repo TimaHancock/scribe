@@ -9,14 +9,22 @@ capture system in `documentation-playbook/`:
 
 - `ProjectLog.psm1`: shared logic, no UI. Active and recent projects,
   `settings.json`, the clipboard-watch lock, evidence file names, the
-  running-log format (`Add-LogEntry`) and tags. Covered by `tests/`.
+  running-log formats (`Add-LogEntry`; `obsidian` and `plain`, a log keeps the
+  format of its existing entries), tags, the projects folder and Obsidian
+  helpers (vault lookup, `obsidian://` links, README frontmatter). Covered by
+  `tests/`.
 - `ProjectLogUI.psm1`: shared WinForms dialogs (the screenshot description box).
 - `Start-Scribe.ps1`: the tray app. Hotkey log box plus the screenshot watcher,
   live settings reload. Formerly `Start-LogBox.ps1`.
 - `Install-Scribe.ps1`: Start Menu and Startup shortcuts.
 - `Save-Screenshot.ps1`: console version of the screenshot watcher (polls the
   clipboard sequence number), for one-off `-OutputDir`/`-LogPath` use.
-- `New-Project.ps1`: scaffolds a project folder per type module.
+- `New-Project.ps1`: scaffolds a project folder per type module. The kickoff
+  card, academic additions and runbook procedure come from the first
+  ```` ```markdown ```` block in the playbook files, so changing those blocks
+  changes new projects; keep the kickoff card's frontmatter keys
+  (`started`, `updated`, `module` placeholders) that it fills in.
+- `Convert-Log.ps1`: rewrites a plain-format log in the obsidian format.
 
 State lives in `%APPDATA%\ProjectLog\` (`active-project.txt`,
 `recent-projects.txt`, `settings.json`, `last-parent.txt`, `scribe.log`).

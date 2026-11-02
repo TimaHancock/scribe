@@ -31,16 +31,21 @@ Name every evidence file `YYYY-MM-DD_HHMM_short-description.ext`, for example `2
 
 Write one line per event, tagged so you can pull each kind out later with a search. Paste errors and output as text; save screenshots for things that only make sense visually.
 
-```text
+````markdown
 ## 2026-10-07 (times local, UTC-4)
-14:32 TRY      Pointed the reverse proxy at the app container on port 8080.
-      SAW      502 Bad Gateway. Proxy log: connect() failed (111: Connection refused)
-      PROOF    evidence/terminal/2026-10-07_1432_proxy-error.txt
-      NEXT     Confirm which port the container listens on.
-14:41 DEAD     Rebuilt the image; same error. Cost 9 min. Check ports before rebuilding.
-14:47 FIX      App listens on 3000, not 8080. Updated upstream; 200 OK.
-      PROOF    evidence/screenshots/2026-10-07_1447_proxy-200-ok.png
-```
+- 14:32 **TRY** Pointed the reverse proxy at the app container on port 8080.
+- 14:32 **SAW** 502 Bad Gateway. Proxy log:
+  ```
+  connect() failed (111: Connection refused)
+  ```
+- 14:32 **PROOF** [[2026-10-07_1432_proxy-error.txt]]
+- 14:33 **NEXT** Confirm which port the container listens on.
+- 14:41 **DEAD** Rebuilt the image; same error. Cost 9 min. Check ports before rebuilding.
+- 14:47 **FIX** App listens on 3000, not 8080. Updated upstream; 200 OK.
+- 14:47 **PROOF** ![[2026-10-07_1447_proxy-200-ok.png]]
+````
+
+Each entry is a list item so the log renders cleanly in Obsidian, and a PROOF line embeds the screenshot inline. Evidence names carry the date and time, so the bare file name finds the file anywhere in the vault. A [plain variant](../templates/02-running-log.md#plain-variant) with aligned columns suits a text editor.
 
 | Tag | Log it when | Feeds this writeup section |
 | --- | --- | --- |

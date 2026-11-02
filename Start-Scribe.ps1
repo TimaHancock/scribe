@@ -20,9 +20,11 @@
     evidence\screenshots folder and logs a PROOF line. Untick "Watch for
     screenshots" in the tray menu to pause this.
 
-    The time and the date heading are added for you. Pick the active project
-    from the tray menu's Project list, the log box, New-Project.ps1 or
-    Set-ActiveProject.
+    The time and the date heading are added for you, in the log's format
+    (logFormat in settings.json sets it for a new log). Pick the active
+    project from the tray menu's Project list, the log box, New-Project.ps1 or
+    Set-ActiveProject. The lists include every project in projectsFolder, and
+    "Open log" opens the log in Obsidian when the project is in a vault.
 
     Settings are in %APPDATA%\ProjectLog\settings.json (tray menu: Edit
     settings) and apply a few seconds after you save. Parameters override them.
@@ -240,6 +242,11 @@ function Update-Settings {
     $tags = if ($explicit -contains 'ExtraTags') { $ExtraTags } else { $s.extraTags }
     $script:knownTags = Get-KnownLogTags -ExtraTags $tags
     $script:watchSetting = $s.watchClipboard
+    $script:logFormat = $s.logFormat
+    $script:projectsFolder = $s.projectsFolder
+    if ($s.projectsFolder -and -not (Test-Path -LiteralPath $s.projectsFolder -PathType Container)) {
+        $problems += "projectsFolder doesn't exist: $($s.projectsFolder)"
+    }
 
     $wanted = if ($explicit -contains 'Hotkey') { $Hotkey } else { $s.logHotkey }
     if ($wanted -ne $script:hotkeyText) {
@@ -295,6 +302,7 @@ function Select-ProjectFolder {
     $dialog.Description = 'Choose the active project folder (its log is log.md)'
     $current = Get-ActiveProject
     if ($current) { $dialog.SelectedPath = $current }
+    elseif ($script:projectsFolder) { $dialog.SelectedPath = $script:projectsFolder }
     try {
         if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
             $root = Set-ActiveProject -Path $dialog.SelectedPath
@@ -408,14 +416,15 @@ function Show-LogBox {
         }
 
         $showTail = {
-            $preview.Text = ((Get-LogTail -LogPath $state.Paths.Log -Count $script:previewLines) -join [Environment]::NewLine)
+            # Drop the Obsidian bold markers; the preview is plain text.
+            $preview.Text = ((Get-LogTail -LogPath $state.Paths.Log -Count $script:previewLines) -join [Environment]::NewLine) -replace '\*\*([A-Z]+)\*\*', '$1'
             if (-not $preview.Text) { $preview.Text = '(log.md is empty or new)' }
             $preview.SelectionStart = $preview.TextLength
             $preview.ScrollToCaret()
         }
-        # Recent projects, newest first, then a way to pick any folder.
+        # Recent projects, newest first, the rest of the projects folder, then a way to pick any folder.
         $fillProjects = {
-            $state.Recent = @(Get-RecentProjects)
+            $state.Recent = @(Get-ProjectChoices -ProjectsFolder $script:projectsFolder)
             $projectPick.Items.Clear()
             foreach ($p in $state.Recent) { [void]$projectPick.Items.Add((Split-Path -Leaf $p)) }
             [void]$projectPick.Items.Add('Choose folder...')
@@ -434,7 +443,7 @@ function Show-LogBox {
             $parsed = Split-LogInput -InputText $entry.Text -KnownTags $script:knownTags
             if ($parsed.Error) { $status.Text = $parsed.Error; return }
             try {
-                [void](Add-LogEntry -LogPath $state.Paths.Log -Tag $parsed.Tag -Text $parsed.Text)
+                [void](Add-LogEntry -LogPath $state.Paths.Log -Tag $parsed.Tag -Text $parsed.Text -DefaultFormat $script:logFormat)
                 $form.Close()
             }
             catch { $status.Text = "Couldn't write to log.md: $($_.Exception.Message)" }
@@ -520,7 +529,7 @@ function Invoke-ScreenshotCapture {
         New-Item -ItemType Directory -Path $paths.Screenshots -Force | Out-Null
         $path = Get-UniquePath -Dir $paths.Screenshots -Base (Get-EvidenceName -When $captured -Description $description -MaxSlugLength $script:maxSlug)
         $image.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-        [void](Add-ProofEntry -LogPath $paths.Log -Path $path -When $captured)
+        [void](Add-ProofEntry -LogPath $paths.Log -Path $path -When $captured -DefaultFormat $script:logFormat)
     }
     catch { Show-TrayMessage "Couldn't save the screenshot: $($_.Exception.Message)" Error }
     finally {
@@ -552,7 +561,7 @@ function New-TrayIcon {
 function Update-ProjectMenu {
     $projectMenu.DropDownItems.Clear()
     $active = Get-ActiveProject
-    foreach ($p in @(Get-RecentProjects)) {
+    foreach ($p in @(Get-ProjectChoices -ProjectsFolder $script:projectsFolder)) {
         $item = New-Object System.Windows.Forms.ToolStripMenuItem (Split-Path -Leaf $p)
         $item.Tag = $p
         $item.ToolTipText = $p
@@ -575,7 +584,17 @@ function Open-ActiveProjectItem {
     if ($What -eq 'Folder') { Invoke-Item -LiteralPath $root; return }
     $log = (Get-ProjectPaths -Root $root).Log
     if (-not (Test-Path -LiteralPath $log)) { New-Item -ItemType File -Path $log | Out-Null }
+    if (Test-OpensInObsidian -Path $log) {
+        try { Start-Process -FilePath (Get-ObsidianUri -Path $log) -ErrorAction Stop; return }
+        catch { }   # fall through to the default app
+    }
     Start-Process -FilePath $log
+}
+
+function Test-OpensInObsidian {
+    <# True when the file is in a vault and Obsidian handles obsidian:// links. #>
+    param([Parameter(Mandatory)][string]$Path)
+    return [bool](Get-ObsidianVault -Path $Path) -and (Test-Path -LiteralPath 'Registry::HKEY_CLASSES_ROOT\obsidian\shell\open\command')
 }
 
 # --- Tray -----------------------------------------------------------------------
@@ -596,7 +615,11 @@ $watchItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Watch for screen
 $watchItem.Add_Click({ Set-Watching (-not $script:watching) })
 [void]$menu.Items.Add($watchItem)
 [void]$menu.Items.Add('-')
-[void]$menu.Items.Add('Open log', $null, { Open-ActiveProjectItem -What Log })
+$openLogItem = $menu.Items.Add('Open log', $null, { Open-ActiveProjectItem -What Log })
+$menu.Add_Opening({
+    $root = Get-ActiveProject
+    $openLogItem.Text = if ($root -and (Test-OpensInObsidian -Path $root)) { 'Open log in Obsidian' } else { 'Open log' }
+})
 [void]$menu.Items.Add('Open project folder', $null, { Open-ActiveProjectItem -What Folder })
 [void]$menu.Items.Add('Edit settings', $null, {
     $path = Initialize-ProjectLogSettings
