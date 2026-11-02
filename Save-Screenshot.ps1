@@ -11,22 +11,28 @@
 
     The timestamp is the moment the image hit the clipboard, not when you
     finished typing. Descriptions are turned into lowercase-hyphen slugs.
-    An image identical to the last one handled (saved or skipped) is ignored,
-    since some tools re-copy the capture when their window closes.
     Clipboard images carry no EXIF or GPS metadata, so saved PNGs are clean.
 
 .PARAMETER OutputDir
-    Folder to save into; created if missing. Default: .\evidence\screenshots
+    Folder to save into; created if missing. Default: the active project's
+    evidence\screenshots folder, or .\evidence\screenshots if no project is set.
 
 .PARAMETER LogPath
-    Optional running log (for example the project's log.md). When set, a
-    PROOF line pointing at each saved file is appended to it.
+    Running log to append a PROOF line to for each saved file. Default: the
+    active project's log.md. With no active project and no -LogPath, nothing
+    is logged.
+
+.PARAMETER NoLog
+    Don't append PROOF lines, even when a project is active.
 
 .PARAMETER MaxSlugLength
     Longest description slug kept in the file name. Default: 50.
 
 .EXAMPLE
     powershell.exe -STA -File .\Save-Screenshot.ps1
+
+    Saves into the active project set by Start-LogBox.ps1 or Set-ActiveProject.
+    Changing the active project takes effect on the next capture.
 
 .EXAMPLE
     powershell.exe -STA -File .\Save-Screenshot.ps1 `
@@ -38,13 +44,15 @@ param(
     [string]$OutputDir = 'evidence\screenshots',
     [string]$LogPath,
     [ValidateRange(10, 120)]
-    [int]$MaxSlugLength = 50
+    [int]$MaxSlugLength = 50,
+    [switch]$NoLog
 )
 
 if ([Threading.Thread]::CurrentThread.GetApartmentState() -ne 'STA') {
     throw 'Clipboard access needs a single-threaded apartment. Run: powershell.exe -STA -File .\Save-Screenshot.ps1'
 }
 
+Import-Module (Join-Path $PSScriptRoot 'ProjectLog.psm1') -Force
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 if (-not ('SaveShot.Native' -as [type])) {
     Add-Type -Namespace SaveShot -Name Native -MemberDefinition @'
@@ -53,9 +61,19 @@ if (-not ('SaveShot.Native' -as [type])) {
 }
 
 $resolve = { param($p) $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($p) }
-$OutputDir = & $resolve $OutputDir
-New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
-if ($LogPath) { $LogPath = & $resolve $LogPath }
+$explicitOutput = $PSBoundParameters.ContainsKey('OutputDir')
+$explicitLog = $PSBoundParameters.ContainsKey('LogPath')
+if ($explicitOutput) { $OutputDir = & $resolve $OutputDir }
+if ($explicitLog) { $LogPath = & $resolve $LogPath }
+
+function Get-Targets {
+    # Re-read the active project on every capture, so switching projects needs no restart.
+    $project = Get-ActiveProject
+    $paths = if ($project) { Get-ProjectPaths -Root $project } else { $null }
+    $dir = if ($explicitOutput) { $OutputDir } elseif ($paths) { $paths.Screenshots } else { & $resolve 'evidence\screenshots' }
+    $log = if ($NoLog) { $null } elseif ($explicitLog) { $LogPath } elseif ($paths) { $paths.Log } else { $null }
+    [pscustomobject]@{ Dir = $dir; Log = $log }
+}
 
 function ConvertTo-Slug {
     param([string]$Text)
@@ -74,28 +92,6 @@ function ConvertTo-Slug {
     }
     if (-not $slug) { $slug = 'screenshot' }
     return $slug
-}
-
-function Get-ImageHash {
-    param([System.Drawing.Bitmap]$Image)
-    # Lock as 32bpp ARGB so the same pixels hash the same whichever clipboard
-    # format (DIB, PNG, ...) the image was read from.
-    $rect = New-Object System.Drawing.Rectangle(0, 0, $Image.Width, $Image.Height)
-    $data = $Image.LockBits($rect, 'ReadOnly', [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-    try {
-        $bytes = New-Object byte[] ($data.Stride * $data.Height)
-        [Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
-    }
-    finally {
-        $Image.UnlockBits($data)
-    }
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try {
-        return '{0}x{1}:{2}' -f $Image.Width, $Image.Height, [BitConverter]::ToString($sha.ComputeHash($bytes))
-    }
-    finally {
-        $sha.Dispose()
-    }
 }
 
 function Get-UniquePath {
@@ -172,22 +168,21 @@ function Show-DescriptionPrompt {
 }
 
 function Add-ProofLine {
-    param([datetime]$When, [string]$Path)
-    $logDir = Split-Path -Parent $LogPath
+    param([string]$Log, [datetime]$When, [string]$Path)
+    $logDir = Split-Path -Parent $Log
     $shown = $Path
     if ($Path.StartsWith($logDir + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
         $shown = $Path.Substring($logDir.Length + 1) -replace '\\', '/'
     }
-    $line = '{0} PROOF     {1}' -f $When.ToString('HH:mm'), $shown
-    Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8
+    [void](Add-LogEntry -LogPath $Log -Tag 'PROOF' -Text $shown -When $When)
 }
 
-Write-Host "Watching the clipboard. Saving to: $OutputDir"
-if ($LogPath) { Write-Host "Appending PROOF lines to: $LogPath" }
+$start = Get-Targets
+Write-Host "Watching the clipboard. Saving to: $($start.Dir)"
+if ($start.Log) { Write-Host "Appending PROOF lines to: $($start.Log)" }
 Write-Host 'Take a screenshot to start. Ctrl+C stops.'
 
 $last = [SaveShot.Native]::GetClipboardSequenceNumber()
-$lastHash = $null
 
 while ($true) {
     Start-Sleep -Milliseconds 400
@@ -208,24 +203,20 @@ while ($true) {
     }
     if ($null -eq $image) { continue }
 
+    $captured = Get-Date
+    $stamp = $captured.ToString('yyyy-MM-dd_HHmm')
     try {
-        # The Snipping Tool puts the same capture on the clipboard again when its
-        # window closes, which bumps the sequence number. Only prompt for new pixels.
-        $hash = Get-ImageHash $image
-        if ($hash -eq $lastHash) { continue }
-        $lastHash = $hash
-
-        $captured = Get-Date
-        $stamp = $captured.ToString('yyyy-MM-dd_HHmm')
         $description = Show-DescriptionPrompt -Stamp $stamp -Image $image
         if ($null -eq $description) {
             Write-Host "Skipped capture from $stamp"
         }
         else {
-            $path = Get-UniquePath -Dir $OutputDir -Base "${stamp}_$(ConvertTo-Slug $description)"
+            $targets = Get-Targets
+            New-Item -ItemType Directory -Path $targets.Dir -Force | Out-Null
+            $path = Get-UniquePath -Dir $targets.Dir -Base "${stamp}_$(ConvertTo-Slug $description)"
             $image.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
             Write-Host "Saved $path"
-            if ($LogPath) { Add-ProofLine -When $captured -Path $path }
+            if ($targets.Log) { Add-ProofLine -Log $targets.Log -When $captured -Path $path }
         }
     }
     finally {
