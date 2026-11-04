@@ -12,7 +12,16 @@
 
     Enter saves and closes. Shift+Enter starts a new line, for pasted output.
     Esc closes without saving. Ctrl+P picks another project. The box shows
-    your last few entries, so you can see where you left off.
+    your last few entries, so you can see where you left off. A DECISION can
+    also create its decisions\NNN-slug.md record, and files dropped on the box
+    are copied into evidence\exports with a PROOF line.
+
+    Copied text. Press the paste hotkey (default Ctrl+Alt+V) and the
+    clipboard's text is logged as a SAW entry, word for word.
+
+    Sessions. Start session and End session in the tray menu log a SESSION
+    entry at each end, with a NEXT when you stop, and remind you during a
+    session when nothing has been logged for a while.
 
     Screenshots. Take a screenshot with any tool that copies to the clipboard
     (Win+Shift+S, PrtScn, ShareX). A box asks for a short description, saves
@@ -201,8 +210,12 @@ function ConvertFrom-HotkeyString {
 }
 
 $LogHotkeyId = 1
+$PasteHotkeyId = 2
+$script:hotkeys = @{}   # hotkey id -> the text registered for it ('' when turned off)
 $explicit = @($PSBoundParameters.Keys)
 $mono = New-Object System.Drawing.Font('Consolas', 10)
+$dropBlue = [System.Drawing.Color]::FromArgb(40, 71, 196)    # the tray icon's blue
+$dropTint = [System.Drawing.Color]::FromArgb(225, 233, 252)  # the log box while files are dragged over it
 
 $script:busy = $false          # a dialog is open; hotkey presses are dropped, clipboard changes wait
 $script:watching = $false
@@ -214,6 +227,8 @@ $script:tick = 0
 $script:hotkeyText = $null
 $script:settingsStamp = $null
 $script:clearNotificationsAt = $null   # when to clear shown notifications from the notification center
+$script:idleMinutes = 0
+$script:remindedAt = $null             # the last-activity time the idle reminder already fired for
 
 function Show-TrayMessage {
     param([string]$Text, [ValidateSet('Info', 'Warning', 'Error')][string]$Level = 'Info')
@@ -259,26 +274,35 @@ function Update-Settings {
         $problems += "projectsFolder doesn't exist: $($s.projectsFolder)"
     }
 
+    $script:idleMinutes = $s.idleReminderMinutes
     $wanted = if ($explicit -contains 'Hotkey') { $Hotkey } else { $s.logHotkey }
-    if ($wanted -ne $script:hotkeyText) {
-        $script:hotkeyText = $null
-        try {
-            $combo = ConvertFrom-HotkeyString -Text $wanted
-            $err = $window.SetHotkey($LogHotkeyId, $combo.Modifiers, $combo.Key)
-            if ($err) { $problems += "Couldn't register $wanted (error $err; 1409 means another app already uses it). Double-click the tray icon instead, or choose another logHotkey." }
-            else { $script:hotkeyText = $wanted }
-        }
-        catch {
-            $window.ClearHotkey($LogHotkeyId)
-            $problems += $_.Exception.Message
-        }
-    }
+    $problems += @(Set-ScribeHotkey -Id $LogHotkeyId -Wanted $wanted -Setting 'logHotkey' -Fallback 'Double-click the tray icon instead, or choose another logHotkey.')
+    $problems += @(Set-ScribeHotkey -Id $PasteHotkeyId -Wanted $s.pasteHotkey -Setting 'pasteHotkey' -Fallback 'Choose another pasteHotkey, or "" to turn it off.')
+    $script:hotkeyText = $script:hotkeys[$LogHotkeyId]
     return $problems
+}
+
+function Set-ScribeHotkey {
+    <# Registers one hotkey when its setting changed ('' turns it off). Returns a problem to report, or nothing. #>
+    param([int]$Id, [string]$Wanted, [string]$Setting, [string]$Fallback)
+    if ($script:hotkeys.ContainsKey($Id) -and $Wanted -eq $script:hotkeys[$Id]) { return }
+    $script:hotkeys[$Id] = $null
+    $window.ClearHotkey($Id)
+    if (-not $Wanted.Trim()) { $script:hotkeys[$Id] = $Wanted; return }
+    try {
+        $combo = ConvertFrom-HotkeyString -Text $Wanted
+        $err = $window.SetHotkey($Id, $combo.Modifiers, $combo.Key)
+        if ($err) { return "Couldn't register $Wanted for $Setting (error $err; 1409 means another app already uses it). $Fallback" }
+        $script:hotkeys[$Id] = $Wanted
+    }
+    catch { return "${Setting}: $($_.Exception.Message)" }
 }
 
 function Update-TrayText {
     $root = Get-ActiveProject
     $text = if ($root) { "Scribe: $(Split-Path -Leaf $root)" } else { 'Scribe: no project' }
+    $session = Get-ProjectSession
+    if ($session) { $text += " - session $(Format-SessionLength ((Get-Date) - $session.Started))" }
     if (-not $script:watching) { $text += ' (screenshots paused)' }
     if ($text.Length -gt 63) { $text = $text.Substring(0, 60) + '...' }   # NotifyIcon.Text throws past 63
     $tray.Text = $text
@@ -316,13 +340,31 @@ function Select-ProjectFolder {
     elseif ($script:projectsFolder) { $dialog.SelectedPath = $script:projectsFolder }
     try {
         if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-            $root = Set-ActiveProject -Path $dialog.SelectedPath
-            Update-TrayText
-            return $root
+            return Switch-ActiveProject -Path $dialog.SelectedPath
         }
     }
     finally { $dialog.Dispose() }
     return $null
+}
+
+function Switch-ActiveProject {
+    <# Set-ActiveProject, plus a notification when a running session moved with it. Returns the new root. #>
+    param([Parameter(Mandatory)][string]$Path)
+    $before = Get-ProjectSession
+    $root = Set-ActiveProject -Path $Path
+    Update-TrayText
+    $message = Get-SessionMoveMessage -Before $before
+    if ($message) { Show-TrayMessage $message }
+    return $root
+}
+
+function Get-SessionMoveMessage {
+    <# "Session moved to B (1h 10m logged on A)." when the session now runs on another project, else nothing. #>
+    param($Before)
+    $after = Get-ProjectSession
+    if (-not $Before -or -not $after -or $after.Project -eq $Before.Project) { return }
+    $length = Format-SessionLength ($after.Started - $Before.Started)
+    return "Session moved to $(Split-Path -Leaf $after.Project) ($length logged on $(Split-Path -Leaf $Before.Project))."
 }
 
 function Show-LogBox {
@@ -333,7 +375,7 @@ function Show-LogBox {
         if (-not $root) { $root = Select-ProjectFolder }
         if (-not $root) { return }
         # Handlers change state through this table, which sidesteps PowerShell scope rules.
-        $state = @{ Paths = Get-ProjectPaths -Root $root; Recent = @() }
+        $state = @{ Paths = Get-ProjectPaths -Root $root; Recent = @(); Record = $null }
 
         $form = New-Object System.Windows.Forms.Form -Property @{
             Text            = "Log - $(Split-Path -Leaf $root)"
@@ -342,7 +384,7 @@ function Show-LogBox {
             TopMost         = $true
             ShowInTaskbar   = $false
             KeyPreview      = $true
-            ClientSize      = New-Object System.Drawing.Size(640, 362)
+            ClientSize      = New-Object System.Drawing.Size(640, 402)
         }
         $screen = [System.Windows.Forms.Screen]::FromPoint([System.Windows.Forms.Cursor]::Position).WorkingArea
         $form.Location = New-Object System.Drawing.Point(
@@ -414,15 +456,46 @@ function Show-LogBox {
             })
             $tags.Controls.Add($link)
         }
+        # A dashed drop target that lights up, with the whole box, while files are dragged over.
+        $dropZone = New-Object System.Windows.Forms.Panel -Property @{
+            BackColor = [System.Drawing.SystemColors]::Window
+            Location  = New-Object System.Drawing.Point(10, 298)
+            Size      = New-Object System.Drawing.Size(620, 38)
+        }
+        $dropIdle = 'Drop files here to save them as evidence  (copied to evidence\exports, with a PROOF line)'
+        $state.DropText = $dropIdle
+        $state.Dragging = $false
+        $dashPen = New-Object System.Drawing.Pen ([System.Drawing.Color]::DarkGray), 1
+        $dashPen.DashStyle = 'Dash'
+        $activePen = New-Object System.Drawing.Pen ($dropBlue), 2
+        $boldFont = New-Object System.Drawing.Font($dropZone.Font, [System.Drawing.FontStyle]::Bold)
+        $dropZone.Add_Paint({
+            param($s, $e)
+            $rect = New-Object System.Drawing.Rectangle(1, 1, ($s.Width - 3), ($s.Height - 3))
+            if ($state.Dragging) { $e.Graphics.DrawRectangle($activePen, $rect) } else { $e.Graphics.DrawRectangle($dashPen, $rect) }
+            $font = if ($state.Dragging) { $boldFont } else { $s.Font }
+            $color = if ($state.Dragging) { $dropBlue } else { [System.Drawing.Color]::DimGray }
+            [System.Windows.Forms.TextRenderer]::DrawText($e.Graphics, $state.DropText, $font, $s.ClientRectangle, $color,
+                [System.Windows.Forms.TextFormatFlags]'HorizontalCenter, VerticalCenter, SingleLine, EndEllipsis')
+        })
         $hint = New-Object System.Windows.Forms.Label -Property @{
             Text      = 'TAG then text  -  Enter saves  -  Shift+Enter new line  -  Ctrl+P project  -  Esc closes'
             ForeColor = [System.Drawing.Color]::DimGray
             AutoSize  = $true
-            Location  = New-Object System.Drawing.Point(10, 300)
+            Location  = New-Object System.Drawing.Point(10, 344)
+        }
+        # Shown in the hint's place while the entry is a DECISION.
+        $recordBox = New-Object System.Windows.Forms.CheckBox -Property @{
+            Text     = 'Also create a decision record (decisions\NNN-slug.md) and open it'
+            Checked  = $true
+            TabStop  = $false
+            Visible  = $false
+            AutoSize = $true
+            Location = New-Object System.Drawing.Point(10, 341)
         }
         $status = New-Object System.Windows.Forms.Label -Property @{
             ForeColor = [System.Drawing.Color]::Firebrick
-            Location  = New-Object System.Drawing.Point(10, 320)
+            Location  = New-Object System.Drawing.Point(10, 362)
             Size      = New-Object System.Drawing.Size(620, 36)
         }
 
@@ -454,16 +527,65 @@ function Show-LogBox {
             $parsed = Split-LogInput -InputText $entry.Text -KnownTags $script:knownTags
             if ($parsed.Error) { $status.Text = $parsed.Error; return }
             try {
-                [void](Add-LogEntry -LogPath $state.Paths.Log -Tag $parsed.Tag -Text $parsed.Text -DefaultFormat $script:logFormat)
+                $text = $parsed.Text
+                if ($parsed.Tag -eq 'DECISION' -and $recordBox.Checked) {
+                    $state.Record = New-DecisionRecord -Root $state.Paths.Root -Decision $text
+                    $text = "$text; see $(Get-NoteLink -LogPath $state.Paths.Log -Path $state.Record -DefaultFormat $script:logFormat)"
+                }
+                [void](Add-LogEntry -LogPath $state.Paths.Log -Tag $parsed.Tag -Text $text -DefaultFormat $script:logFormat)
                 $form.Close()
             }
             catch { $status.Text = "Couldn't write to log.md: $($_.Exception.Message)" }
+        }
+        $setDragging = {
+            param([bool]$On, [string]$Text)
+            $state.Dragging = $On
+            $state.DropText = if ($On) { $Text } else { $dropIdle }
+            $form.BackColor = if ($On) { $dropTint } else { [System.Drawing.SystemColors]::Control }
+            $dropZone.BackColor = if ($On) { [System.Drawing.Color]::White } else { [System.Drawing.SystemColors]::Window }
+            $dropZone.Invalidate()
+        }
+        # Each dropped file is copied into evidence\exports and gets a PROOF line.
+        $dropFiles = {
+            param($s, $e)
+            & $setDragging $false
+            $saved = 0
+            $skipped = @()
+            foreach ($f in @($e.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop))) {
+                try {
+                    if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { $skipped += Split-Path -Leaf $f; continue }
+                    $copy = Copy-EvidenceFile -Root $state.Paths.Root -Path $f -MaxSlugLength $script:maxSlug
+                    [void](Add-ProofEntry -LogPath $state.Paths.Log -Path $copy -DefaultFormat $script:logFormat)
+                    $saved++
+                }
+                catch { $skipped += "$(Split-Path -Leaf $f) ($($_.Exception.Message))" }
+            }
+            & $showTail
+            $status.ForeColor = if ($skipped) { [System.Drawing.Color]::Firebrick } else { [System.Drawing.Color]::DarkGreen }
+            $status.Text = "Saved $saved file$(if ($saved -ne 1) { 's' }) to evidence\exports with a PROOF line."
+            if ($skipped) { $status.Text += " Skipped (folders aren't copied): $($skipped -join ', ')" }
+            [void]$entry.Focus()
+        }
+        $dragOver = {
+            param($s, $e)
+            if (-not $e.Data.GetDataPresent([System.Windows.Forms.DataFormats]::FileDrop)) { return }
+            $e.Effect = 'Copy'
+            $items = @($e.Data.GetData([System.Windows.Forms.DataFormats]::FileDrop))
+            $files = @($items | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }).Count
+            $text = if (-not $files) { "Folders aren't copied; drop the files inside them" }
+                    elseif ($files -eq 1) { 'Release to save 1 file to evidence\exports' }
+                    else { "Release to save $files files to evidence\exports" }
+            & $setDragging $true $text
+        }
+        $dragLeave = {
+            # Moving between controls inside the box also fires this; only a real exit counts.
+            if (-not $form.RectangleToScreen($form.ClientRectangle).Contains([System.Windows.Forms.Cursor]::Position)) { & $setDragging $false }
         }
 
         $projectPick.Add_SelectionChangeCommitted({
             $i = $projectPick.SelectedIndex
             if ($i -ge 0 -and $i -lt $state.Recent.Count) {
-                try { & $switchTo (Set-ActiveProject -Path $state.Recent[$i]) }
+                try { & $switchTo (Switch-ActiveProject -Path $state.Recent[$i]) }
                 catch { $status.Text = "Couldn't switch project: $($_.Exception.Message)"; & $fillProjects }
             }
             else {
@@ -498,12 +620,27 @@ function Show-LogBox {
             [void][Scribe.MessageWindow]::SetForegroundWindow($form.Handle)
             [void]$entry.Focus()
         })
+        $entry.Add_TextChanged({
+            $isDecision = $entry.Text -match '^\s*decision\b'
+            $recordBox.Visible = $isDecision
+            $hint.Visible = -not $isDecision
+            if ($status.ForeColor -ne [System.Drawing.Color]::Firebrick) { $status.Text = ''; $status.ForeColor = [System.Drawing.Color]::Firebrick }
+        })
 
         & $fillProjects
-        $form.Controls.AddRange(@($projectLabel, $projectPick, $preview, $entry, $tags, $hint, $status))
+        $form.Controls.AddRange(@($projectLabel, $projectPick, $preview, $entry, $tags, $dropZone, $hint, $recordBox, $status))
+        # A drop lands on whichever control is under the mouse, so every one of them takes it.
+        foreach ($c in @($form) + @($form.Controls) + @($tags.Controls)) {
+            $c.AllowDrop = $true
+            $c.Add_DragEnter($dragOver)
+            $c.Add_DragLeave($dragLeave)
+            $c.Add_DragDrop($dropFiles)
+        }
         [void]$form.ShowDialog()
         $tagTips.Dispose()
         $form.Dispose()
+        $dashPen.Dispose(); $activePen.Dispose(); $boldFont.Dispose()
+        if ($state.Record) { Open-Note -Path $state.Record }
     }
     finally { $script:busy = $false }
 }
@@ -532,20 +669,90 @@ function Invoke-ScreenshotCapture {
         if (-not $root) { $root = Select-ProjectFolder }
         if (-not $root) { return }
 
-        $description = Show-DescriptionPrompt -Image $image -When $captured -MaxSlugLength $script:maxSlug -ProjectName (Split-Path -Leaf $root)
-        if ($null -eq $description) { return }
+        $answer = Show-DescriptionPrompt -Image $image -When $captured -MaxSlugLength $script:maxSlug -ProjectName (Split-Path -Leaf $root)
+        if ($null -eq $answer) { return }
 
         # Save where the dialog said, even if the project changed while it was open.
         $paths = Get-ProjectPaths -Root $root
         New-Item -ItemType Directory -Path $paths.Screenshots -Force | Out-Null
-        $path = Get-UniquePath -Dir $paths.Screenshots -Base (Get-EvidenceName -When $captured -Description $description -MaxSlugLength $script:maxSlug)
+        $path = Get-UniquePath -Dir $paths.Screenshots -Base (Get-EvidenceName -When $captured -Description $answer.Description -MaxSlugLength $script:maxSlug)
         $image.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+        if ($answer.Tag) { [void](Add-LogEntry -LogPath $paths.Log -Tag $answer.Tag -Text $answer.Note -When $captured -DefaultFormat $script:logFormat) }
         [void](Add-ProofEntry -LogPath $paths.Log -Path $path -When $captured -DefaultFormat $script:logFormat)
     }
     catch { Show-TrayMessage "Couldn't save the screenshot: $($_.Exception.Message)" Error }
     finally {
         $image.Dispose()
         $script:busy = $false
+    }
+}
+
+function Invoke-PasteCapture {
+    <# The paste hotkey: logs the clipboard's text as a SAW entry in the active project. #>
+    $text = $null
+    try {
+        if ([System.Windows.Forms.Clipboard]::ContainsText()) { $text = [System.Windows.Forms.Clipboard]::GetText() }
+    }
+    catch { Show-TrayMessage "Couldn't read the clipboard. Try again." Warning; return }
+    if (-not $text -or -not $text.Trim()) { Show-TrayMessage "The clipboard has no text to log. Copy the output first, then press $($script:hotkeys[$PasteHotkeyId])."; return }
+    $root = Get-ActiveProject
+    if (-not $root) { Show-TrayMessage 'No active project yet. Pick one from the Project menu.'; return }
+    try {
+        $saved = Add-PastedEntry -LogPath (Get-ProjectPaths -Root $root).Log -Text $text -DefaultFormat $script:logFormat
+        $lines = @($text.Trim() -split "`r?`n")
+        $shown = $lines[0].Trim()
+        if ($shown.Length -gt 60) { $shown = $shown.Substring(0, 57) + '...' }
+        $more = if ($saved) { " ($($lines.Count) lines, saved as $(Split-Path -Leaf $saved))" } elseif ($lines.Count -gt 1) { " (+$($lines.Count - 1) more lines)" } else { '' }
+        Show-TrayMessage "SAW logged to $(Split-Path -Leaf $root): $shown$more"
+    }
+    catch { Show-TrayMessage "Couldn't log the clipboard text: $($_.Exception.Message)" Error }
+}
+
+function Switch-Session {
+    <# Starts a session on the active project, or ends the running one after asking for a NEXT. #>
+    if ($script:busy) { return }
+    $open = Get-ProjectSession
+    if (-not $open) {
+        $root = Get-ActiveProject
+        if (-not $root) { Show-TrayMessage 'No active project yet. Pick one from the Project menu.'; return }
+        try {
+            Start-ProjectSession -Root $root -DefaultFormat $script:logFormat
+            $script:remindedAt = $null
+            Update-TrayText
+            Show-TrayMessage "Session started on $(Split-Path -Leaf $root)."
+        }
+        catch { Show-TrayMessage "Couldn't start a session: $($_.Exception.Message)" Error }
+        return
+    }
+    $script:busy = $true
+    try {
+        $next = Show-SessionEndDialog -ProjectName (Split-Path -Leaf $open.Project) -Length ((Get-Date) - $open.Started)
+        if ($null -eq $next) { return }
+        $length = Stop-ProjectSession -Next $next -DefaultFormat $script:logFormat
+        Update-TrayText
+        Show-TrayMessage "Session on $(Split-Path -Leaf $open.Project) ended after $(Format-SessionLength $length)."
+    }
+    catch { Show-TrayMessage "Couldn't end the session: $($_.Exception.Message)" Error }
+    finally { $script:busy = $false }
+}
+
+function Test-IdleReminder {
+    <# During a session, a reminder once nothing has been logged for idleReminderMinutes. #>
+    if (-not $script:idleMinutes) { return }
+    $open = Get-ProjectSession
+    if (-not $open) { return }
+    $log = (Get-ProjectPaths -Root $open.Project).Log
+    $last = $open.Started
+    if (Test-Path -LiteralPath $log) {
+        $written = (Get-Item -LiteralPath $log).LastWriteTime
+        if ($written -gt $last) { $last = $written }
+    }
+    # Once per quiet spell: a new entry moves $last on and re-arms it.
+    if ($script:remindedAt -eq $last) { return }
+    if (((Get-Date) - $last).TotalMinutes -ge $script:idleMinutes) {
+        $script:remindedAt = $last
+        $span = if ($script:idleMinutes -eq 1) { '1 minute' } else { "$($script:idleMinutes) minutes" }
+        Show-TrayMessage "Nothing logged on $(Split-Path -Leaf $open.Project) for $span. What are you trying now? ($($script:hotkeyText) to log it)"
     }
 }
 
@@ -579,7 +786,7 @@ function Update-ProjectMenu {
         $item.Checked = ($p -eq $active)
         $item.Add_Click({
             param($s, $e)
-            try { [void](Set-ActiveProject -Path $s.Tag); Update-TrayText }
+            try { [void](Switch-ActiveProject -Path $s.Tag) }
             catch { Show-TrayMessage "Couldn't switch project: $($_.Exception.Message)" Error }
         })
         [void]$projectMenu.DropDownItems.Add($item)
@@ -654,6 +861,8 @@ function New-ProjectFromTray {
 
         $arguments = @('-Slug', $choice.Name, '-Module', $choice.Module, '-Path', (ConvertTo-ArgumentPath $choice.Path), '-SetActive')
         if ($choice.Module -eq 'Capstone') { $arguments += @('-Tasks', $choice.Tasks) }
+        # New-Project.ps1 switches the active project, which moves a running session too.
+        $before = Get-ProjectSession
         $result = Invoke-ProjectScript -Name 'New-Project.ps1' -Arguments $arguments
         $root = Join-Path $choice.Path $choice.Name
         if ($result.ExitCode -or -not (Test-Path -LiteralPath $root)) {
@@ -661,7 +870,7 @@ function New-ProjectFromTray {
             return
         }
         Update-TrayText
-        Show-TrayMessage "Created $($choice.Name). It's the active project now."
+        Show-TrayMessage (("Created $($choice.Name). It's the active project now. " + (Get-SessionMoveMessage -Before $before)).Trim())
         if ($choice.OpenReadme) { Open-Note -Path (Join-Path $root 'README.md') }
     }
     catch { Show-TrayMessage "Couldn't create the project: $($_.Exception.Message)" Error }
@@ -729,6 +938,7 @@ $projectMenu = New-Object System.Windows.Forms.ToolStripMenuItem 'Project'
 $projectMenu.Add_DropDownOpening({ Update-ProjectMenu })
 [void]$menu.Items.Add($projectMenu)
 [void]$menu.Items.Add('New project...', $null, { New-ProjectFromTray })
+$sessionItem = $menu.Items.Add('Start session', $null, { Switch-Session })
 $watchItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Watch for screenshots'
 $watchItem.Add_Click({ Set-Watching (-not $script:watching) })
 [void]$menu.Items.Add($watchItem)
@@ -737,6 +947,8 @@ $openLogItem = $menu.Items.Add('Open log', $null, { Open-ActiveProjectItem -What
 $menu.Add_Opening({
     $root = Get-ActiveProject
     $openLogItem.Text = if ($root -and (Test-OpensInObsidian -Path $root)) { 'Open log in Obsidian' } else { 'Open log' }
+    $session = Get-ProjectSession
+    $sessionItem.Text = if ($session) { "End session ($(Format-SessionLength ((Get-Date) - $session.Started)))..." } else { 'Start session' }
 })
 [void]$menu.Items.Add('Open project folder', $null, { Open-ActiveProjectItem -What Folder })
 $convertMenu = New-Object System.Windows.Forms.ToolStripMenuItem 'Convert log to Obsidian'
@@ -759,7 +971,7 @@ $tray.Visible = $true
 # --- Start --------------------------------------------------------------------
 
 if ($Project) {
-    try { [void](Set-ActiveProject -Path $Project) }
+    try { [void](Switch-ActiveProject -Path $Project) }
     catch { Show-TrayMessage "Couldn't use -Project: $($_.Exception.Message)" Warning }
 }
 $problems = @(Update-Settings)
@@ -779,9 +991,11 @@ $timer.Add_Tick({
         if ($script:busy) {
             # A dialog is open: drop hotkey presses, leave clipboard changes for later.
             [void]$window.TakePress($LogHotkeyId)
+            [void]$window.TakePress($PasteHotkeyId)
             return
         }
         if ($window.TakePress($LogHotkeyId)) { Show-LogBox; return }
+        if ($window.TakePress($PasteHotkeyId)) { Invoke-PasteCapture; return }
 
         # Some tools write several clipboard formats per capture; wait until they settle.
         if ($window.TakeClipboardChange()) { $script:clipDue = (Get-Date).AddMilliseconds(200) }
@@ -794,6 +1008,7 @@ $timer.Add_Tick({
         $script:tick++
         if ($script:tick % 50 -eq 0) {
             Update-TrayText
+            Test-IdleReminder
             if ((Get-SettingsStamp) -ne $script:settingsStamp) {
                 $wasWatchSetting = $script:watchSetting
                 $problems = @(Update-Settings)

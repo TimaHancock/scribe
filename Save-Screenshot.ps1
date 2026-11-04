@@ -126,17 +126,20 @@ try {
             $lastHash = $hash
 
             $captured = Get-Date
-            $description = Show-DescriptionPrompt -Image $image -When $captured -MaxSlugLength $MaxSlugLength -ProjectName (Get-Targets).Project
-            if ($null -eq $description) {
+            $answer = Show-DescriptionPrompt -Image $image -When $captured -MaxSlugLength $MaxSlugLength -ProjectName (Get-Targets).Project
+            if ($null -eq $answer) {
                 Write-Host "Skipped capture from $($captured.ToString('HH:mm'))"
             }
             else {
                 $targets = Get-Targets
                 New-Item -ItemType Directory -Path $targets.Dir -Force | Out-Null
-                $path = Get-UniquePath -Dir $targets.Dir -Base (Get-EvidenceName -When $captured -Description $description -MaxSlugLength $MaxSlugLength)
+                $path = Get-UniquePath -Dir $targets.Dir -Base (Get-EvidenceName -When $captured -Description $answer.Description -MaxSlugLength $MaxSlugLength)
                 $image.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
                 Write-Host "Saved $path"
-                if ($targets.Log) { [void](Add-ProofEntry -LogPath $targets.Log -Path $path -When $captured) }
+                if ($targets.Log) {
+                    if ($answer.Tag) { [void](Add-LogEntry -LogPath $targets.Log -Tag $answer.Tag -Text $answer.Note -When $captured) }
+                    [void](Add-ProofEntry -LogPath $targets.Log -Path $path -When $captured)
+                }
             }
         }
         finally {

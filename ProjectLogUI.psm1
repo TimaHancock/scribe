@@ -47,8 +47,10 @@ namespace ProjectLogUI {
 
 function Show-DescriptionPrompt {
     <#
-        Shows a captured image and asks for a short description.
-        Returns the typed text, or $null if the capture was skipped.
+        Shows a captured image and asks for a short description, and
+        optionally a second entry to log with it (SAW, FIX, TRY or DEAD and a
+        note). Returns Description, Tag ($null for PROOF only) and Note, or
+        $null if the capture was skipped.
     #>
     param(
         [Parameter(Mandatory)][System.Drawing.Image]$Image,
@@ -66,7 +68,7 @@ function Show-DescriptionPrompt {
         MinimizeBox     = $false
         StartPosition   = 'CenterScreen'
         TopMost         = $true
-        ClientSize      = New-Object System.Drawing.Size(420, 300)
+        ClientSize      = New-Object System.Drawing.Size(420, 332)
     }
     $preview = New-Object System.Windows.Forms.PictureBox -Property @{
         Image       = $Image
@@ -90,36 +92,116 @@ function Show-DescriptionPrompt {
         Location  = New-Object System.Drawing.Point(10, 240)
         Size      = New-Object System.Drawing.Size(400, 18)
     }
+    # A second entry with the PROOF line: pick a tag (type its first letter) and a note.
+    $alsoLabel = New-Object System.Windows.Forms.Label -Property @{
+        Text     = 'Also log:'
+        AutoSize = $true
+        Location = New-Object System.Drawing.Point(10, 268)
+    }
+    $alsoPick = New-Object System.Windows.Forms.ComboBox -Property @{
+        DropDownStyle = 'DropDownList'
+        Location      = New-Object System.Drawing.Point(70, 265)
+        Size          = New-Object System.Drawing.Size(90, 24)
+    }
+    foreach ($t in '(nothing)', 'SAW', 'FIX', 'TRY', 'DEAD') { [void]$alsoPick.Items.Add($t) }
+    $alsoPick.SelectedIndex = 0
+    $note = New-Object System.Windows.Forms.TextBox -Property @{
+        Enabled  = $false
+        Location = New-Object System.Drawing.Point(166, 265)
+        Size     = New-Object System.Drawing.Size(244, 24)
+    }
     $save = New-Object System.Windows.Forms.Button -Property @{
         Text         = 'Save'
         DialogResult = 'OK'
-        Location     = New-Object System.Drawing.Point(254, 266)
+        Location     = New-Object System.Drawing.Point(254, 298)
         Size         = New-Object System.Drawing.Size(75, 26)
     }
     $skip = New-Object System.Windows.Forms.Button -Property @{
         Text         = 'Skip'
         DialogResult = 'Cancel'
-        Location     = New-Object System.Drawing.Point(335, 266)
+        Location     = New-Object System.Drawing.Point(335, 298)
         Size         = New-Object System.Drawing.Size(75, 26)
     }
 
     $form.AcceptButton = $save
     $form.CancelButton = $skip
     $box.Add_TextChanged({ $nameLabel.Text = "$(Get-EvidenceName -When $When -Description $box.Text -MaxSlugLength $MaxSlugLength).png" })
+    $alsoPick.Add_SelectedIndexChanged({
+        $note.Enabled = $alsoPick.SelectedIndex -gt 0
+        if ($note.Enabled -and -not $note.Text) { $note.Text = $box.Text }
+    })
     $form.Add_Shown({
         $form.Activate()
         [void][ProjectLogUI.Foreground]::Take($form.Handle)
         [void]$box.Focus()
     })
-    $form.Controls.AddRange(@($preview, $label, $box, $nameLabel, $save, $skip))
+    $form.Controls.AddRange(@($preview, $label, $box, $nameLabel, $alsoLabel, $alsoPick, $note, $save, $skip))
 
     $result = $form.ShowDialog()
-    $text = $box.Text
+    $answer = [pscustomobject]@{
+        Description = $box.Text
+        Tag         = if ($alsoPick.SelectedIndex -gt 0) { [string]$alsoPick.SelectedItem } else { $null }
+        Note        = $note.Text.Trim()
+    }
     $preview.Image = $null
     $form.Dispose()
 
-    if ($result -eq [System.Windows.Forms.DialogResult]::OK) { return $text }
-    return $null
+    if ($result -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
+    if ($answer.Tag -and -not $answer.Note) { $answer.Note = if ($answer.Description.Trim()) { $answer.Description.Trim() } else { 'See the screenshot' } }
+    return $answer
+}
+
+function Show-SessionEndDialog {
+    <# Asks where to pick up next time. Returns the NEXT text ('' for none), or $null to keep the session going. #>
+    param([string]$ProjectName, [TimeSpan]$Length)
+    $font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $form = New-Object System.Windows.Forms.Form -Property @{
+        Text            = "End session - $ProjectName"
+        FormBorderStyle = 'FixedDialog'
+        MaximizeBox     = $false
+        MinimizeBox     = $false
+        StartPosition   = 'CenterScreen'
+        TopMost         = $true
+        Font            = $font
+        ClientSize      = New-Object System.Drawing.Size(440, 128)
+    }
+    $label = New-Object System.Windows.Forms.Label -Property @{
+        Text     = "You worked $(Format-SessionLength $Length). Where should you pick up next time? (logged as NEXT; leave it empty to skip)"
+        Location = New-Object System.Drawing.Point(10, 10)
+        Size     = New-Object System.Drawing.Size(420, 36)
+    }
+    $box = New-Object System.Windows.Forms.TextBox -Property @{
+        Location = New-Object System.Drawing.Point(10, 52)
+        Size     = New-Object System.Drawing.Size(420, 24)
+    }
+    $end = New-Object System.Windows.Forms.Button -Property @{
+        Text         = 'End session'
+        DialogResult = 'OK'
+        Location     = New-Object System.Drawing.Point(254, 92)
+        Size         = New-Object System.Drawing.Size(95, 26)
+    }
+    $cancel = New-Object System.Windows.Forms.Button -Property @{
+        Text         = 'Keep going'
+        DialogResult = 'Cancel'
+        Location     = New-Object System.Drawing.Point(355, 92)
+        Size         = New-Object System.Drawing.Size(75, 26)
+    }
+    $form.AcceptButton = $end
+    $form.CancelButton = $cancel
+    $form.Add_Shown({
+        $form.Activate()
+        [void][ProjectLogUI.Foreground]::Take($form.Handle)
+        [void]$box.Focus()
+    })
+    $form.Controls.AddRange(@($label, $box, $end, $cancel))
+    try {
+        if ($form.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return $null }
+        return $box.Text.Trim()
+    }
+    finally {
+        $form.Dispose()
+        $font.Dispose()
+    }
 }
 
 function Show-NewProjectDialog {
@@ -261,4 +343,4 @@ function Show-NewProjectDialog {
     }
 }
 
-Export-ModuleMember -Function Show-DescriptionPrompt, Show-NewProjectDialog
+Export-ModuleMember -Function Show-DescriptionPrompt, Show-NewProjectDialog, Show-SessionEndDialog

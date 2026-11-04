@@ -222,6 +222,8 @@ Describe 'Get-ProjectLogSettings' {
         $s.watchClipboard | Should -BeTrue
         $s.logFormat | Should -Be 'obsidian'
         $s.projectsFolder | Should -Be ''
+        $s.pasteHotkey | Should -Be 'Ctrl+Alt+V'
+        $s.idleReminderMinutes | Should -Be 15
         @($s.Warnings).Count | Should -Be 0
     }
     It 'rejects an unknown log format' {
@@ -519,5 +521,152 @@ Describe 'Clipboard watch lock' {
 
         $free = Start-Job { Import-Module $using:module; $l = Enter-ClipboardWatch; $null -ne $l; if ($l) { Exit-ClipboardWatch -Lock $l } } | Wait-Job | Receive-Job
         $free | Should -BeTrue
+    }
+}
+
+Describe 'Add-PastedEntry' {
+    BeforeEach {
+        $script:root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive "paste-$([guid]::NewGuid())")).FullName
+        $script:log = Join-Path $root 'log.md'
+        $script:when = [datetime]'2026-11-04 09:15'
+    }
+
+    It 'logs one line inline as code in an obsidian log' {
+        [void](Add-PastedEntry -LogPath $log -Text "  connect() failed (111)`r`n`r`n" -When $when -DefaultFormat obsidian)
+        (Get-Content -LiteralPath $log)[1] | Should -Be '- 09:15 **SAW** `connect() failed (111)`'
+    }
+    It 'escapes backticks in inline code' {
+        [void](Add-PastedEntry -LogPath $log -Text 'run `ls` now' -When $when -DefaultFormat obsidian)
+        (Get-Content -LiteralPath $log)[1] | Should -Be '- 09:15 **SAW** ``run `ls` now``'
+    }
+    It 'puts several lines in a code block under a count' {
+        [void](Add-PastedEntry -LogPath $log -Text "line one`nline two" -When $when -DefaultFormat obsidian)
+        $lines = Get-Content -LiteralPath $log
+        $lines[1] | Should -Be '- 09:15 **SAW** Pasted 2 lines:'
+        $lines[2..5] | Should -Be @('  ```', '  line one', '  line two', '  ```')
+    }
+    It 'logs plain text as is in a plain log' {
+        [void](Add-PastedEntry -LogPath $log -Text 'connect() failed' -When $when -DefaultFormat plain)
+        (Get-Content -LiteralPath $log)[1] | Should -Be '09:15 SAW      connect() failed'
+    }
+    It 'saves a long paste as a file and links it' {
+        $file = Add-PastedEntry -LogPath $log -Text ((1..5 | ForEach-Object { "row $_" }) -join "`n") -When $when -DefaultFormat obsidian -MaxLines 3
+        $file | Should -Be (Join-Path $root 'evidence\terminal\2026-11-04_0915_pasted.txt')
+        @(Get-Content -LiteralPath $file).Count | Should -Be 5
+        $lines = Get-Content -LiteralPath $log
+        $lines[1] | Should -Be '- 09:15 **SAW** Pasted 5 lines, saved as evidence:'
+        $lines[2] | Should -Be '- 09:15 **PROOF** [[2026-11-04_0915_pasted.txt]]'
+    }
+    It 'refuses empty text' {
+        { Add-PastedEntry -LogPath $log -Text " `n " } | Should -Throw '*empty*'
+    }
+}
+
+Describe 'Copy-EvidenceFile' {
+    It 'copies a file into evidence\exports under the naming rule' {
+        $root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'drop')).FullName
+        $src = Join-Path $TestDrive 'Router Config (old).CONF'
+        Set-Content -LiteralPath $src -Value 'hostname r1'
+        $when = [datetime]'2026-11-04 09:20'
+        $a = Copy-EvidenceFile -Root $root -Path $src -When $when
+        $a | Should -Be (Join-Path $root 'evidence\exports\2026-11-04_0920_router-config-old.conf')
+        Get-Content -LiteralPath $a | Should -Be 'hostname r1'
+        Copy-EvidenceFile -Root $root -Path $src -When $when | Should -Be (Join-Path $root 'evidence\exports\2026-11-04_0920_router-config-old-2.conf')
+    }
+    It 'keeps a file without an extension extensionless' {
+        $root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'drop2')).FullName
+        $src = Join-Path $TestDrive 'Dockerfile'
+        Set-Content -LiteralPath $src -Value 'FROM x'
+        Copy-EvidenceFile -Root $root -Path $src -When ([datetime]'2026-11-04 09:20') | Should -Be (Join-Path $root 'evidence\exports\2026-11-04_0920_dockerfile')
+    }
+    It 'refuses a folder' {
+        { Copy-EvidenceFile -Root $TestDrive -Path $TestDrive } | Should -Throw '*Not a file*'
+    }
+}
+
+Describe 'New-DecisionRecord' {
+    It 'numbers records after the highest one and fills in the template' {
+        $root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'dec')).FullName
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'decisions') | Out-Null
+        Set-Content -LiteralPath (Join-Path $root 'decisions\007-old.md') -Value 'x'
+        $path = New-DecisionRecord -Root $root -Decision 'Delete stale app registrations; disabling leaves owners confused' -When ([datetime]'2026-11-04')
+        $path | Should -Be (Join-Path $root 'decisions\008-delete-stale-app-registrations.md')
+        $text = [IO.File]::ReadAllText($path)
+        $text | Should -Match '(?m)^# 008\. Delete stale app registrations\r?$'
+        $text | Should -Match 'Date: 2026-11-04 \S+ Status: accepted'
+        $text | Should -Match '(?m)^Delete stale app registrations; disabling leaves owners confused\r?$'
+        $text | Should -Not -Match 'NNN|YYYY'
+    }
+    It 'links a record by name in an obsidian log and by path in a plain one' {
+        $root = Join-Path $TestDrive 'dec'
+        $rec = Join-Path $root 'decisions\008-x.md'
+        Get-NoteLink -LogPath (Join-Path $root 'new.md') -Path $rec -DefaultFormat obsidian | Should -Be '[[008-x]]'
+        Get-NoteLink -LogPath (Join-Path $root 'new.md') -Path $rec -DefaultFormat plain | Should -Be 'decisions/008-x.md'
+    }
+}
+
+Describe 'Work sessions' {
+    BeforeEach {
+        Remove-Item -LiteralPath $stateDir -Recurse -Force -ErrorAction SilentlyContinue
+        $script:root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive "sess-$([guid]::NewGuid())")).FullName
+        $script:log = Join-Path $root 'log.md'
+    }
+
+    It 'logs the start and end, with NEXT, and remembers the open session' {
+        Start-ProjectSession -Root $root -When ([datetime]'2026-11-04 09:00') -DefaultFormat obsidian
+        (Get-ProjectSession).Project | Should -Be $root
+        (Get-ProjectSession).Started | Should -Be ([datetime]'2026-11-04 09:00')
+        { Start-ProjectSession -Root $root } | Should -Throw '*already running*'
+        $length = Stop-ProjectSession -Next 'Compare owners with HR' -When ([datetime]'2026-11-04 10:25')
+        $length | Should -Be (New-TimeSpan -Hours 1 -Minutes 25)
+        Get-ProjectSession | Should -BeNullOrEmpty
+        $lines = Get-Content -LiteralPath $log
+        $lines[1] | Should -Be '- 09:00 **SESSION** Started'
+        $lines[2] | Should -Be '- 10:25 **NEXT** Compare owners with HR'
+        $lines[3] | Should -Be '- 10:25 **SESSION** Ended after 1h 25m'
+    }
+    It 'adds up ended sessions in either format' {
+        $text = @(
+            '## 2026-11-03 (times local, UTC-5)'
+            '09:00 SESSION  Started'
+            '10:25 SESSION  Ended after 1h 25m'
+            '      SESSION  Ended after 0h 05m'
+            '- 14:00 **SESSION** Ended after 2h 40m'
+            '- 15:00 **SESSION** Ended after 0h 20m, switched to other-project'
+        ) -join "`r`n"
+        [IO.File]::WriteAllText($log, $text)
+        Get-SessionTime -LogPath $log | Should -Be (New-TimeSpan -Hours 4 -Minutes 30)
+    }
+    It 'moves a running session when the active project changes' {
+        $other = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive "sess-b-$([guid]::NewGuid())")).FullName
+        [void](Set-ActiveProject $root)
+        Start-ProjectSession -Root $root -When (Get-Date).AddMinutes(-70) -DefaultFormat obsidian
+        [void](Set-ActiveProject $other)
+        (Get-ProjectSession).Project | Should -Be $other
+        ((Get-Date) - (Get-ProjectSession).Started).TotalMinutes | Should -BeLessThan 1
+        (Get-Content -LiteralPath $log)[-1] | Should -Match "^- \d{2}:\d{2} \*\*SESSION\*\* Ended after 1h 10m, switched to $([regex]::Escape((Split-Path -Leaf $other)))$"
+        (Get-Content -LiteralPath (Join-Path $other 'log.md'))[-1] | Should -Match '\*\*SESSION\*\* Started$|SESSION +Started$'
+        Get-SessionTime -LogPath $log | Should -Be (New-TimeSpan -Hours 1 -Minutes 10)
+    }
+    It 'leaves the session alone when the same project is chosen again' {
+        [void](Set-ActiveProject $root)
+        Start-ProjectSession -Root $root -DefaultFormat obsidian
+        [void](Set-ActiveProject $root.ToUpperInvariant())
+        @(Get-Content -LiteralPath $log | Where-Object { $_ -match 'SESSION' }).Count | Should -Be 1
+    }
+    It "doesn't recreate a deleted project to end its session" {
+        $gone = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive "sess-gone-$([guid]::NewGuid())")).FullName
+        Start-ProjectSession -Root $gone -DefaultFormat obsidian
+        Remove-Item -LiteralPath $gone -Recurse -Force
+        [void](Set-ActiveProject $root)
+        Test-Path -LiteralPath $gone | Should -BeFalse
+        (Get-ProjectSession).Project | Should -Be $root
+    }
+    It 'formats a length in hours and minutes' {
+        Format-SessionLength (New-TimeSpan -Minutes 3) | Should -Be '0h 03m'
+        Format-SessionLength (New-TimeSpan -Hours 26 -Minutes 59 -Seconds 40) | Should -Be '27h 00m'
+    }
+    It 'refuses to stop when no session is running' {
+        { Stop-ProjectSession } | Should -Throw '*No session*'
     }
 }

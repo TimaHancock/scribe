@@ -12,6 +12,7 @@ per project, one running log (`log.md`) and one file-naming rule.
 | [New-Project.ps1](#new-projectps1) | Creates a project folder in the playbook's layout and makes it the active project |
 | [Save-Screenshot.ps1](#save-screenshotps1) | The console version of Scribe's screenshot watcher, for a one-off output folder |
 | [Convert-Log.ps1](#convert-logps1) | Rewrites an older plain-format log in the Obsidian format |
+| [ProjectLogTerminal.psm1](#terminal-commands) | `log` and `Save-Proof` for any PowerShell window, plus an optional transcript |
 | `ProjectLog.psm1`, `ProjectLogUI.psm1` | Shared modules: active and recent projects, settings, the log format, file names, dialogs |
 
 Everything uses the same **active project**, so a screenshot and a log entry
@@ -86,6 +87,57 @@ folder. Switching there switches the active project everywhere.
 
 The time and the date heading are added for you; see [Log format](#log-format).
 
+**Decisions.** When the entry starts with DECISION, a ticked box offers to
+create a decision record too: `decisions\NNN-<slug>.md`, numbered after the
+last one and filled in from the playbook's
+[decision-record template](documentation-playbook/templates/03-decision-record.md).
+The log entry links to it, and the record opens so you can add the context and
+the options you weighed.
+
+**Files.** Drop files anywhere on the log box (the dashed area at the bottom
+says so) and each one is copied into the project's `evidence\exports` under
+the naming rule (keeping its extension) with a PROOF line. While you drag, the
+box turns blue and says how many files it will save. The copy is exact, so a file keeps any metadata it already had,
+such as a photo's EXIF data.
+
+### Copied text
+
+Copy an error or some output, press **Ctrl+Alt+V**, and it's logged as a SAW
+entry in the active project, word for word. One line goes inline as code;
+several go in a code block. More than 50 lines are saved to
+`evidence\terminal` as a `.txt` file with a PROOF line instead. A notification
+shows what was logged.
+
+Ctrl+Alt+V is also Paste Special in Office apps, and Scribe takes it while it
+runs. Pick another `pasteHotkey` in [settings](#settings), or `""` for none.
+
+### Sessions
+
+**Start session** in the tray menu marks the start of a stretch of work on the
+active project with a SESSION entry, and the tray tooltip shows the time
+running. **End session...** asks where to pick up next time, logs that as a
+NEXT entry, and logs how long the session lasted:
+
+```markdown
+- 09:00 **SESSION** Started
+- 10:25 **NEXT** Compare the owner list with the HR roster
+- 10:25 **SESSION** Ended after 1h 25m
+```
+
+Those lengths are what a writeup's "Time spent" will be added up from. During a
+session, a notification nudges you after `idleReminderMinutes` (default 15)
+with nothing logged. A session survives a Scribe restart.
+
+Switching projects during a session moves it: the session ends on the old
+project and starts on the new one, so each log gets its own share of the time.
+A notification says how long was logged on the old one. No NEXT is asked for;
+to leave one, end the session before switching. This happens however you
+switch, including New project and New-Project.ps1.
+
+```markdown
+- 11:10 **SESSION** Ended after 1h 10m, switched to 2026-11-other-project
+```
+
 ### Screenshots
 
 When an image lands on the clipboard, a box shows a preview and the project it
@@ -98,6 +150,15 @@ saved in the project's `evidence\screenshots` as:
 
 and a PROOF line is added to the project's `log.md`. Esc skips the capture.
 As you type, the box shows the file name it will save to.
+
+To log what the screenshot shows as well, pick a tag under **Also log**
+(SAW, FIX, TRY or DEAD; type its first letter) and edit the note, which starts
+as the description. That entry is logged just before the PROOF line:
+
+```markdown
+- 14:33 **SAW** Proxy still answers 502 after the port change
+- 14:33 **PROOF** ![[2026-10-26_1433_proxy-502-page.png]]
+```
 
 If the clipboard gets an image with exactly the same pixels as the last one
 you saved or skipped, the box doesn't open again. The Snipping Tool, for
@@ -114,6 +175,7 @@ screenshots** in the tray menu.
 | New log entry | Opens the log box (double-clicking the icon does too) |
 | Project | Recent projects, then the rest of `projectsFolder`, with the active one ticked, and Choose folder... |
 | New project... | Asks for a name, type and folder (`projectsFolder` to start with), runs [New-Project.ps1](#new-projectps1), makes the new project active and opens its kickoff card |
+| Start session / End session... | Starts or ends a [work session](#sessions) on the active project |
 | Watch for screenshots | Pauses or resumes the screenshot watcher |
 | Open log | Opens the active project's `log.md`: in Obsidian when the project is inside a vault, otherwise in the default app for `.md` |
 | Open project folder | Opens the active project's folder |
@@ -150,18 +212,22 @@ instead.
 ```json
 {
   "logHotkey": "Ctrl+Alt+L",
+  "pasteHotkey": "Ctrl+Alt+V",
   "previewLines": 6,
   "extraTags": [],
   "watchClipboard": true,
   "maxSlugLength": 50,
   "logFormat": "obsidian",
-  "projectsFolder": ""
+  "projectsFolder": "",
+  "idleReminderMinutes": 15
 }
 ```
 
 | Setting | Default | Description |
 | --- | --- | --- |
 | `logHotkey` | `"Ctrl+Alt+L"` | Hotkey for the log box. |
+| `pasteHotkey` | `"Ctrl+Alt+V"` | Hotkey that logs the clipboard's text as SAW. `""` turns it off. |
+| `idleReminderMinutes` | `15` | During a session, remind after this many minutes with nothing logged (0 turns it off, up to 240). |
 | `previewLines` | `6` | Recent log lines shown in the box (0-20). |
 | `extraTags` | `[]` | Extra single-word tags, such as `["FLAG", "LOOT"]`. |
 | `watchClipboard` | `true` | Whether Scribe starts watching for screenshots. Changing it while Scribe runs pauses or resumes the watcher. |
@@ -186,11 +252,54 @@ the folder.
 | `-Start` | Start Scribe now as well. |
 | `-NoAutostart` | Only the Start Menu shortcut; removes the Startup one if present. |
 | `-Uninstall` | Remove both shortcuts. Exit a running Scribe from its tray menu. |
+| `-Terminal` | Add the [terminal commands](#terminal-commands) to your PowerShell profiles instead of making shortcuts. With `-Uninstall`, remove them. |
+| `-Transcript` | With `-Terminal`: also start a transcript in every new PowerShell window. |
 | `-WhatIf` | Show what would change. |
 
 The shortcuts run Windows PowerShell 5.1 hidden with
 `-ExecutionPolicy Bypass` for this one script. The console may flash in the
 taskbar for a moment at sign-in.
+
+`-Terminal` sets up the [terminal commands](#terminal-commands) instead of the
+shortcuts.
+
+## Terminal commands
+
+`ProjectLogTerminal.psm1` brings the running log to any PowerShell window,
+Windows PowerShell 5.1 or PowerShell 7. Entries go to the active project, in
+its log's format.
+
+```powershell
+log TRY Pointed the reverse proxy at port 8080
+docker logs web --tail 20 | log SAW 'Proxy log after the change'
+log DECISION Delete stale app registrations -Record
+Get-NetTCPConnection -LocalPort 8080 | Save-Proof 'listening on 8080'
+```
+
+| Command | Does |
+| --- | --- |
+| `log TAG text...` | Adds an entry (`log` is short for `Add-ProjectLog`). Tab completes the tag. Piped output goes in a code block under the text, or is saved to `evidence\terminal` with a PROOF line past 50 lines. `-Record` on a DECISION also creates its decision record. |
+| `... \| Save-Proof name` | Saves the output to `evidence\terminal\YYYY-MM-DD_HHMM_<name>.txt`, headed by the command that produced it, and logs a PROOF line. The output still shows on screen; `-Quiet` hides it. |
+| `Start-ProjectTranscript` | Records the rest of the session to `evidence\terminal\..._transcript.txt`. |
+
+To load them in every new window, add them to your PowerShell profiles:
+
+```powershell
+.\Install-Scribe.ps1 -Terminal                # log and Save-Proof
+.\Install-Scribe.ps1 -Terminal -Transcript    # and a transcript of every session
+.\Install-Scribe.ps1 -Terminal -Uninstall     # take them out again
+```
+
+This adds a marked block to `profile.ps1` for Windows PowerShell and for
+PowerShell 7 in your Documents folder, keeping the rest of each file as it was.
+Running it again replaces the block. Profiles only run when the execution
+policy allows scripts; the installer warns if it doesn't.
+
+A transcript records everything typed and printed, passwords included, so it's
+off unless you ask for it. It stays in `evidence\`, which never leaves your
+machine. Windows PowerShell 5.1 writes your user and machine name at the top of
+each transcript, and the next transcript you start removes them from the
+closed ones. PowerShell 7 never writes them.
 
 ## New-Project.ps1
 

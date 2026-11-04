@@ -114,27 +114,6 @@ $moduleNames = @{
 }
 $playbook = Join-Path $PSScriptRoot 'documentation-playbook'
 
-function Get-PlaybookTemplate {
-    <#
-        The first ```markdown block in a playbook file, after the line Heading
-        when one is given. Read as UTF-8, so the playbook's own characters
-        survive Windows PowerShell's ANSI default.
-    #>
-    param([Parameter(Mandatory)][string]$File, [string]$Heading)
-    $path = Join-Path $playbook $File
-    if (-not (Test-Path -LiteralPath $path)) { throw "Playbook template not found: $path" }
-    $lines = [IO.File]::ReadAllLines($path, $utf8)
-    $i = 0
-    if ($Heading) {
-        while ($i -lt $lines.Count -and $lines[$i].Trim() -ne $Heading) { $i++ }
-    }
-    while ($i -lt $lines.Count -and $lines[$i] -notmatch '^(`{3,})markdown\s*$') { $i++ }
-    if ($i -ge $lines.Count) { throw "No markdown block$(if ($Heading) { " after '$Heading'" }) in $path" }
-    $fence = $Matches[1]
-    $block = for ($j = $i + 1; $j -lt $lines.Count -and $lines[$j] -ne $fence; $j++) { $lines[$j] }
-    return (@($block) -join "`n") + "`n"
-}
-
 function Get-KickoffCard([string]$ModuleName) {
     $card = Get-PlaybookTemplate 'templates\01-kickoff-card.md'
     $date = $today.ToString('yyyy-MM-dd')

@@ -85,7 +85,12 @@ function Get-ActiveProject {
 }
 
 function Set-ActiveProject {
-    <# Points every tool at a project folder and moves it to the top of the recent list. Its log is <folder>\log.md. #>
+    <#
+        Points every tool at a project folder and moves it to the top of the
+        recent list. Its log is <folder>\log.md. A running work session moves
+        with it: it ends on the old project and starts on this one, so each log
+        gets its own share of the time.
+    #>
     param([Parameter(Mandatory)][string]$Path)
     $root = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).ProviderPath
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw "Not a folder: $root" }
@@ -96,6 +101,21 @@ function Set-ActiveProject {
     $recent = @($root) + @(Get-RecentProjects -Count 9 | Where-Object { $_ -ne $root })
     [IO.File]::WriteAllText($config, $root, $utf8)
     [IO.File]::WriteAllText((Get-ProjectLogStatePath 'recent-projects.txt'), (($recent -join "`r`n") + "`r`n"), $utf8)
+
+    $open = Get-ProjectSession
+    if ($open -and $open.Project -ne $root) {
+        # The switch has happened either way; a log that can't be written shouldn't undo it.
+        try {
+            $when = Get-Date
+            # A deleted project gets no "Ended" line; logging would recreate its folder.
+            if (Test-Path -LiteralPath $open.Project -PathType Container) {
+                [void](Stop-ProjectSession -When $when -Reason "switched to $(Split-Path -Leaf $root)")
+            }
+            else { Remove-Item -LiteralPath (Get-ProjectLogStatePath 'session.json') -Force }
+            Start-ProjectSession -Root $root -When $when
+        }
+        catch { Write-Warning "Couldn't move the work session to $(Split-Path -Leaf $root): $($_.Exception.Message)" }
+    }
     return $root
 }
 
@@ -203,17 +223,21 @@ $script:DefaultSettings = [ordered]@{
     maxSlugLength  = 50
     logFormat      = 'obsidian'
     projectsFolder = ''
+    pasteHotkey    = 'Ctrl+Alt+V'
+    idleReminderMinutes = 15
 }
 # Written by Initialize-ProjectLogSettings; keep in step with the defaults above.
 $script:DefaultSettingsJson = @'
 {
   "logHotkey": "Ctrl+Alt+L",
+  "pasteHotkey": "Ctrl+Alt+V",
   "previewLines": 6,
   "extraTags": [],
   "watchClipboard": true,
   "maxSlugLength": 50,
   "logFormat": "obsidian",
-  "projectsFolder": ""
+  "projectsFolder": "",
+  "idleReminderMinutes": 15
 }
 '@
 $script:LogFormats = @('obsidian', 'plain')
@@ -224,6 +248,8 @@ function Test-SettingValue {
     $isInt = $Value -is [int] -or $Value -is [long]
     switch ($Name) {
         'logHotkey'      { if ($Value -isnot [string] -or -not $Value.Trim()) { return 'should be text such as "Ctrl+Alt+L"' } }
+        'pasteHotkey'    { if ($Value -isnot [string]) { return 'should be text such as "Ctrl+Alt+V", or "" for none' } }
+        'idleReminderMinutes' { if (-not $isInt -or $Value -lt 0 -or $Value -gt 240) { return 'should be a whole number of minutes from 0 (off) to 240' } }
         'previewLines'   { if (-not $isInt -or $Value -lt 0 -or $Value -gt 20) { return 'should be a whole number from 0 to 20' } }
         'maxSlugLength'  { if (-not $isInt -or $Value -lt 10 -or $Value -gt 120) { return 'should be a whole number from 10 to 120' } }
         'watchClipboard' { if ($Value -isnot [bool]) { return 'should be true or false' } }
@@ -371,16 +397,17 @@ function Get-EvidenceName {
 }
 
 function Get-UniquePath {
-    <# <Dir>\<Base>.<Extension>, adding -2, -3, ... rather than overwriting. #>
+    <# <Dir>\<Base>.<Extension>, adding -2, -3, ... rather than overwriting. An empty Extension means none. #>
     param(
         [Parameter(Mandatory)][string]$Dir,
         [Parameter(Mandatory)][string]$Base,
-        [string]$Extension = 'png'
+        [AllowEmptyString()][string]$Extension = 'png'
     )
-    $path = Join-Path $Dir "$Base.$Extension"
+    $suffix = if ($Extension) { ".$Extension" } else { '' }
+    $path = Join-Path $Dir "$Base$suffix"
     $n = 2
     while (Test-Path -LiteralPath $path) {
-        $path = Join-Path $Dir "$Base-$n.$Extension"
+        $path = Join-Path $Dir "$Base-$n$suffix"
         $n++
     }
     return $path
@@ -656,6 +683,247 @@ function ConvertTo-ObsidianLog {
     return ($out -join "`n")
 }
 
+# --- Playbook templates -------------------------------------------------------------
+
+$script:PlaybookRoot = Join-Path $PSScriptRoot 'documentation-playbook'
+
+function Get-PlaybookTemplate {
+    <#
+        The first ```markdown block in a playbook file (relative to
+        documentation-playbook\), after the line Heading when one is given.
+        Read as UTF-8, so the playbook's own characters survive Windows
+        PowerShell's ANSI default.
+    #>
+    param([Parameter(Mandatory)][string]$File, [string]$Heading)
+    $path = Join-Path $script:PlaybookRoot $File
+    if (-not (Test-Path -LiteralPath $path)) { throw "Playbook template not found: $path" }
+    $lines = [IO.File]::ReadAllLines($path, (New-Object Text.UTF8Encoding $false))
+    $i = 0
+    if ($Heading) {
+        while ($i -lt $lines.Count -and $lines[$i].Trim() -ne $Heading) { $i++ }
+    }
+    while ($i -lt $lines.Count -and $lines[$i] -notmatch '^(`{3,})markdown\s*$') { $i++ }
+    if ($i -ge $lines.Count) { throw "No markdown block$(if ($Heading) { " after '$Heading'" }) in $path" }
+    $fence = $Matches[1]
+    $block = for ($j = $i + 1; $j -lt $lines.Count -and $lines[$j] -ne $fence; $j++) { $lines[$j] }
+    return (@($block) -join "`n") + "`n"
+}
+
+# --- Pasted text, dropped files and decision records --------------------------------
+
+function Add-PastedEntry {
+    <#
+        Logs copied text or command output as one entry, verbatim. Without a
+        Note, a single line goes inline (as code in an obsidian log) and
+        several lines go in a code block under "Pasted N lines:". With a Note,
+        the note is the entry's text and all of the output goes in the block.
+        More than MaxLines is saved to evidence\terminal as a .txt file
+        instead, with a short entry and a PROOF line, so a huge paste can't
+        swamp the log. Returns the path of a saved file, or $null.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$LogPath,
+        [Parameter(Mandatory)][string]$Text,
+        [string]$Tag = 'SAW',
+        [string]$Note,
+        [datetime]$When = (Get-Date),
+        [ValidateSet('obsidian', 'plain')][string]$DefaultFormat,
+        [int]$MaxLines = 50
+    )
+    $Note = "$Note".Trim()
+    $lines = @(($Text -replace "`r`n", "`n").Split("`n") | ForEach-Object { $_.TrimEnd() })
+    while ($lines.Count -and -not $lines[0]) { $lines = @($lines | Select-Object -Skip 1) }
+    while ($lines.Count -and -not $lines[-1]) { $lines = @($lines | Select-Object -First ($lines.Count - 1)) }
+    if (-not $lines.Count) { throw 'The clipboard text is empty.' }
+    $format = Resolve-LogFormat -LogPath $LogPath -DefaultFormat $DefaultFormat
+
+    if ($lines.Count -gt $MaxLines) {
+        $dir = Join-Path (Join-Path (Split-Path -Parent $LogPath) 'evidence') 'terminal'
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $file = Get-UniquePath -Dir $dir -Base (Get-EvidenceName -When $When -DefaultSlug 'pasted') -Extension 'txt'
+        [IO.File]::WriteAllText($file, (($lines -join "`r`n") + "`r`n"), (New-Object Text.UTF8Encoding $false))
+        $summary = if ($Note) { "$Note ($($lines.Count) lines, saved as evidence)" } else { "Pasted $($lines.Count) lines, saved as evidence:" }
+        [void](Add-LogEntry -LogPath $LogPath -Tag $Tag -Text $summary -When $When -DefaultFormat $format)
+        [void](Add-ProofEntry -LogPath $LogPath -Path $file -When $When -DefaultFormat $format)
+        return $file
+    }
+    if ($Note) {
+        $entry = (@($Note) + $lines) -join "`n"
+    }
+    elseif ($lines.Count -eq 1) {
+        $entry = $lines[0].Trim()
+        if ($format -eq 'obsidian') {
+            # Inline code needs a backtick run longer than any inside, and a space when the text starts or ends with one.
+            $longest = 0
+            foreach ($m in [regex]::Matches($entry, '`+')) { $longest = [Math]::Max($longest, $m.Length) }
+            $tick = '`' * ($longest + 1)
+            $pad = if ($entry -match '^`|`$') { ' ' } else { '' }
+            $entry = "$tick$pad$entry$pad$tick"
+        }
+    }
+    else {
+        $entry = (@("Pasted $($lines.Count) lines:") + $lines) -join "`n"
+    }
+    [void](Add-LogEntry -LogPath $LogPath -Tag $Tag -Text $entry -When $When -DefaultFormat $format)
+    return $null
+}
+
+function Copy-EvidenceFile {
+    <#
+        Copies a file into the project's evidence\<Folder> under the naming rule,
+        keeping its extension. The copy is byte for byte, so the file keeps any
+        metadata it already had. Returns the new path.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$Path,
+        [datetime]$When = (Get-Date),
+        [string]$Folder = 'exports',
+        [int]$MaxSlugLength = 50
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "Not a file: $Path" }
+    $dir = Join-Path (Join-Path $Root 'evidence') $Folder
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $base = Get-EvidenceName -When $When -Description ([IO.Path]::GetFileNameWithoutExtension($Path)) -MaxSlugLength $MaxSlugLength -DefaultSlug 'file'
+    $target = Get-UniquePath -Dir $dir -Base $base -Extension ([IO.Path]::GetExtension($Path).TrimStart('.').ToLowerInvariant())
+    Copy-Item -LiteralPath $Path -Destination $target
+    return $target
+}
+
+function New-DecisionRecord {
+    <#
+        Creates decisions\NNN-<slug>.md from the playbook's decision-record
+        template, numbered after the highest record already there, with the
+        title, date and decision filled in. Returns the new path.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$Decision,
+        [datetime]$When = (Get-Date)
+    )
+    $dir = Join-Path $Root 'decisions'
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    $last = 0
+    foreach ($f in Get-ChildItem -LiteralPath $dir -File) {
+        if ($f.Name -match '^(\d{3})-') { $last = [Math]::Max($last, [int]$Matches[1]) }
+    }
+    $number = '{0:D3}' -f ($last + 1)
+
+    # The heading is a short noun phrase: the decision up to its first reason.
+    $title = ($Decision -split '[;\r\n]')[0].Trim().TrimEnd('.')
+    if ($title.Length -gt 80) { $title = $title.Substring(0, 77).TrimEnd() + '...' }
+    $slug = ConvertTo-Slug -Text $title -MaxLength 50
+    if (-not $slug) { $slug = 'decision' }
+    $path = Get-UniquePath -Dir $dir -Base "$number-$slug" -Extension 'md'
+
+    $text = Get-PlaybookTemplate 'templates\03-decision-record.md'
+    $text = $text -replace '(?m)^# NNN\. <[^>\r\n]*>', "# $number. $($title.Replace('$', '$$'))"
+    $text = $text.Replace('YYYY-MM-DD', $When.ToString('yyyy-MM-dd'))
+    $text = $text -replace 'proposed \| accepted \| superseded by NNN', 'accepted'
+    $text = $text -replace '(?m)^We will \.\.\..*$', $Decision.Trim().Replace('$', '$$')
+    [IO.File]::WriteAllText($path, ($text -replace "`r?`n", "`r`n"), (New-Object Text.UTF8Encoding $false))
+    return $path
+}
+
+function Get-NoteLink {
+    <# How a log points at a note in the project: [[name]] in an obsidian log, the relative path in a plain one. #>
+    param(
+        [Parameter(Mandatory)][string]$LogPath,
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateSet('obsidian', 'plain')][string]$DefaultFormat
+    )
+    if ((Resolve-LogFormat -LogPath $LogPath -DefaultFormat $DefaultFormat) -eq 'obsidian') {
+        return "[[$([IO.Path]::GetFileNameWithoutExtension($Path))]]"
+    }
+    $logDir = Split-Path -Parent $LogPath
+    if ($Path.StartsWith($logDir + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        return $Path.Substring($logDir.Length + 1) -replace '\\', '/'
+    }
+    return $Path
+}
+
+# --- Work sessions ------------------------------------------------------------------
+#
+# A session is logged as two SESSION entries, "Started" and "Ended after 1h 25m",
+# so time spent can be read back from the log. session.json in the state folder
+# holds the one open session, so it survives a Scribe restart.
+
+function Format-SessionLength {
+    param([Parameter(Mandatory)][TimeSpan]$Length)
+    $minutes = [int][Math]::Max(0, [Math]::Round($Length.TotalMinutes))
+    return '{0}h {1:D2}m' -f [Math]::Floor($minutes / 60), ($minutes % 60)
+}
+
+function Get-ProjectSession {
+    <# The open session (Project, Started), or $null. #>
+    $file = Get-ProjectLogStatePath 'session.json'
+    if (-not (Test-Path -LiteralPath $file)) { return $null }
+    try {
+        $s = [IO.File]::ReadAllText($file) | ConvertFrom-Json -ErrorAction Stop
+        # PowerShell 7 turns the ISO date into a DateTime already; 5.1 leaves it a string.
+        $started = $s.started
+        if ($started -isnot [datetime]) { $started = [datetime]::ParseExact($started, 's', [Globalization.CultureInfo]::InvariantCulture) }
+        return [pscustomobject]@{ Project = [string]$s.project; Started = $started }
+    }
+    catch { return $null }
+}
+
+function Start-ProjectSession {
+    <# Opens a session on a project and logs SESSION Started. Throws if one is already open. #>
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [datetime]$When = (Get-Date),
+        [ValidateSet('obsidian', 'plain')][string]$DefaultFormat
+    )
+    $open = Get-ProjectSession
+    if ($open) { throw "A session on $(Split-Path -Leaf $open.Project) is already running." }
+    $file = Get-ProjectLogStatePath 'session.json'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $file) -Force | Out-Null
+    $json = ConvertTo-Json -InputObject ([ordered]@{ project = $Root; started = $When.ToString('s') })
+    [IO.File]::WriteAllText($file, $json, (New-Object Text.UTF8Encoding $false))
+    $log = (Get-ProjectPaths -Root $Root).Log
+    [void](Add-LogEntry -LogPath $log -Tag 'SESSION' -Text 'Started' -When $When -DefaultFormat (Resolve-LogFormat -LogPath $log -DefaultFormat $DefaultFormat))
+}
+
+function Stop-ProjectSession {
+    <#
+        Closes the open session: logs NEXT (when given), then SESSION Ended after
+        <length> (and the Reason, when given), in the project the session
+        started in. Returns the length.
+    #>
+    param(
+        [string]$Next,
+        [datetime]$When = (Get-Date),
+        [ValidateSet('obsidian', 'plain')][string]$DefaultFormat,
+        [string]$Reason
+    )
+    $open = Get-ProjectSession
+    if (-not $open) { throw 'No session is running.' }
+    $log = (Get-ProjectPaths -Root $open.Project).Log
+    $format = Resolve-LogFormat -LogPath $log -DefaultFormat $DefaultFormat
+    $length = $When - $open.Started
+    if ($Next -and $Next.Trim()) {
+        [void](Add-LogEntry -LogPath $log -Tag 'NEXT' -Text $Next.Trim() -When $When -DefaultFormat $format)
+    }
+    $text = "Ended after $(Format-SessionLength $length)"
+    if ($Reason) { $text += ", $Reason" }
+    [void](Add-LogEntry -LogPath $log -Tag 'SESSION' -Text $text -When $When -DefaultFormat $format)
+    Remove-Item -LiteralPath (Get-ProjectLogStatePath 'session.json') -Force
+    return $length
+}
+
+function Get-SessionTime {
+    <# Total time of the ended sessions in a log, for the writeup's "Time spent". #>
+    param([Parameter(Mandatory)][string]$LogPath)
+    $total = [TimeSpan]::Zero
+    if (-not (Test-Path -LiteralPath $LogPath)) { return $total }
+    foreach ($line in [IO.File]::ReadAllLines($LogPath, (New-Object Text.UTF8Encoding $false))) {
+        $m = [regex]::Match($line, '^(?:- )?(?:\d{2}:\d{2}| {5}) (?:\*\*SESSION\*\*|SESSION +) ?Ended after (\d+)h (\d+)m')
+        if ($m.Success) { $total += New-Object TimeSpan ([int]$m.Groups[1].Value), ([int]$m.Groups[2].Value), 0 }
+    }
+    return $total
+}
+
 function Get-LogTail {
     <# The last few non-empty lines of a log, for the box's preview. #>
     param([Parameter(Mandatory)][string]$LogPath, [int]$Count = 6)
@@ -668,4 +936,6 @@ Export-ModuleMember -Function Get-ProjectLogStatePath, Get-ActiveProject, Set-Ac
     Get-ProjectLogSettings, Initialize-ProjectLogSettings, Enter-ClipboardWatch, Exit-ClipboardWatch,
     ConvertTo-Slug, Get-ProjectFolderName, Get-EvidenceName, Get-UniquePath, Add-ProofEntry, Get-ImageHash,
     Get-KnownLogTags, Get-LogTagHelp, Split-LogInput, Format-LogEntry, Find-LogFormat, Resolve-LogFormat,
-    Add-LogEntry, ConvertTo-ObsidianLog, Get-LogTail
+    Add-LogEntry, ConvertTo-ObsidianLog, Get-LogTail,
+    Get-PlaybookTemplate, Add-PastedEntry, Copy-EvidenceFile, New-DecisionRecord, Get-NoteLink,
+    Format-SessionLength, Get-ProjectSession, Start-ProjectSession, Stop-ProjectSession, Get-SessionTime

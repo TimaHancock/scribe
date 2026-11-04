@@ -94,20 +94,26 @@ if the PowerShell ceiling is reached.
 
 ## Phase 3: More ways to capture, each one keystroke
 
-- Copied text goes straight into the log: copy an error, press `Ctrl+Alt+V`,
-  and it's logged as a SAW entry in a code block.
-- Terminal integration: a profile snippet starts `Start-Transcript` into
-  `evidence/terminal/`, and adds a `log TRY "..."` function and a
-  `| Save-Proof name` pipe that saves command output and writes the PROOF line.
-- A DECISION entry offers to create `decisions/NNN-slug.md`, filled in, with the
-  link added to the log.
-- Drop a file on the log box and it's copied into `evidence/exports/` under the
-  naming rule, with a PROOF line.
-- Sessions: start and stop from the tray; stopping asks for a NEXT. Logged time
-  fills in "Time spent" in the writeup. Optional "nothing logged in 30 min"
-  reminder.
-- A tag field in the screenshot dialog (PROOF by default, or SAW/FIX with a
-  note), so one capture can produce a two-line entry.
+- [x] Copied text goes straight into the log: copy an error, press `Ctrl+Alt+V`
+  (`pasteHotkey`), and it's logged as a SAW entry in a code block. Past 50
+  lines it's saved to `evidence/terminal/` and linked instead.
+- [x] Terminal integration: `ProjectLogTerminal.psm1` adds a `log TRY "..."`
+  function (piped output goes in a code block) and a `| Save-Proof name` pipe
+  that saves command output and writes the PROOF line, plus an opt-in
+  `Start-ProjectTranscript` into `evidence/terminal/`.
+  `Install-Scribe.ps1 -Terminal [-Transcript]` puts it in both profiles.
+- [x] A DECISION entry offers to create `decisions/NNN-slug.md`, filled in from
+  the template, with the link added to the log (`log DECISION ... -Record` in
+  the terminal).
+- [x] Drop a file on the log box and it's copied into `evidence/exports/` under
+  the naming rule, with a PROOF line.
+- [x] Sessions: start and stop from the tray; stopping asks for a NEXT. SESSION
+  entries record each length, and `Get-SessionTime` adds them up for "Time
+  spent" (filled into the writeup by `Export-LogDigest` in Phase 4). Switching
+  projects moves a running session, so each log gets its own time. Optional
+  "nothing logged in 15 min" reminder (`idleReminderMinutes`).
+- [x] An "Also log" field in the screenshot dialog (PROOF only by default, or
+  SAW/FIX/TRY/DEAD with a note), so one capture can produce a two-line entry.
 
 ## Phase 4: Automate Distill to Publish
 
@@ -139,5 +145,4 @@ the background, and capturing is the whole point.
 
 ## Order
 
-Phases 0, 1, 2 and 2.5 are done. Next: the clipboard-text hotkey and terminal
-`log` function from Phase 3, then `Export-LogDigest`, then the rest.
+Phases 0 to 3 are done. Next: `Export-LogDigest` from Phase 4, then the rest.

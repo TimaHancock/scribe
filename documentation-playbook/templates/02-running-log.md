@@ -20,6 +20,8 @@ Each entry is a list item, so the log reads cleanly in Obsidian. Pasted output g
 - HH:MM **REF** <title> <url>; what it told you
 ````
 
+Scribe adds one more tag of its own: SESSION, written when you start and end a work session from its tray menu (`Started`, then `Ended after 1h 25m`). The lengths add up to the writeup's "Time spent".
+
 ## Plain variant
 
 For a log read in a text editor rather than Obsidian, use aligned columns instead. A second entry in the same minute leaves the time blank, and extra lines are indented under the text. Scribe writes this format when `logFormat` is `plain` in its settings; a log keeps whichever format its first entry used.

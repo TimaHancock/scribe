@@ -13,7 +13,13 @@ capture system in `documentation-playbook/`:
   format of its existing entries), tags, the projects folder and Obsidian
   helpers (vault lookup, `obsidian://` links, README frontmatter). Covered by
   `tests/`.
-- `ProjectLogUI.psm1`: shared WinForms dialogs (the screenshot description box).
+- `ProjectLogUI.psm1`: shared WinForms dialogs (the screenshot description
+  box, New project, End session).
+- `ProjectLogTerminal.psm1`: `log`, `Save-Proof` and `Start-ProjectTranscript`
+  for any PowerShell prompt. Unlike the rest, it must also run under
+  PowerShell 7, the user's terminal; test it under both `powershell.exe` and
+  `pwsh`. `Install-Scribe.ps1 -Terminal` adds it to the profiles
+  (`-ProfilePath` points that at scratch files for testing).
 - `Start-Scribe.ps1`: the tray app. Hotkey log box plus the screenshot watcher,
   live settings reload. Formerly `Start-LogBox.ps1`.
 - `Install-Scribe.ps1`: Start Menu and Startup shortcuts.
