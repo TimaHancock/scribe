@@ -220,6 +220,8 @@ function Show-NewProjectDialog {
         TechEval  = 'Tech evaluation - choosing a product or tool'
         Academic  = 'Academic - one graded task'
         Capstone  = 'Capstone - multi-task capstone'
+        CodingPython     = 'Coding (Python) - repo with src layout'
+        CodingPowerShell = 'Coding (PowerShell) - module repo'
     }
     $font = New-Object System.Drawing.Font('Segoe UI', 9)
     $form = New-Object System.Windows.Forms.Form -Property @{

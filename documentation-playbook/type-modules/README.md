@@ -56,16 +56,15 @@ Criteria to add, drop or reweight.
 
 ## Module registry
 
-Fourteen modules are listed, in suggested build order; reorder them as your projects change.
+Thirteen modules are listed, in suggested build order; reorder them as your projects change.
 
 | Module | Covers | Seed exemplars | Status |
 | --- | --- | --- | --- |
 | Lab and CTF writeup | Hack The Box and similar boxes, CTF challenges, course labs | [0xdf](https://0xdf.gitlab.io/); [HTB publication rules](https://help.hackthebox.com/en/articles/5188925-streaming-writeups-walkthrough-guidelines) | Planned |
-| Automation script or tool | PowerShell or Python tools, CLIs, scheduled jobs | [How I build a feature](https://simonwillison.net/2022/Jan/12/how-i-build-a-feature/); [Awesome README](https://github.com/matiassingers/awesome-readme) | Planned |
+| [Coding project](coding-project.md) | Scripts, tools, modules, apps and games, as a Tool or Product track; Python and PowerShell repository layouts as sub-types | [How I build a feature](https://simonwillison.net/2022/Jan/12/how-i-build-a-feature/); [Awesome README](https://github.com/matiassingers/awesome-readme); [Oxide RFD 1](https://rfd.shared.oxide.computer/rfd/0001) | Drafting |
 | Cloud and identity configuration | Tenant settings, access policies, configuration-as-code rollouts | [Nygard ADR](https://www.cognitect.com/blog/2011/11/15/documenting-architecture-decisions); [Design Docs at Google](https://www.industrialempathy.com/posts/design-docs-at-google/) | Planned |
 | Security assessment report | Pentests, vulnerability assessments, audits | [Public pentesting reports](https://github.com/juliocesarfort/public-pentesting-reports) | Planned |
 | Infrastructure and homelab build | Lab networks, servers, containers, hardware | [Raspberry Pi PCIe Database](https://pipci.jeffgeerling.com/) | Planned |
-| Software or product build | Web apps, SaaS tools, games, study tools | [Oxide RFD 1](https://rfd.shared.oxide.computer/rfd/0001); [Awesome README](https://github.com/matiassingers/awesome-readme) | Planned |
 | Fleet rollout or change | One change applied across many systems or sites | [GitLab postmortem](https://about.gitlab.com/blog/postmortem-of-database-outage-of-january-31/), for its runbook lessons | Planned |
 | Research deep-dive | Cryptography, protocol or vulnerability analysis | [Project Zero RCA template](https://googleprojectzero.github.io/0days-in-the-wild/0day-RCAs/template.html) | Planned |
 | [Academic assessment](academic-assessment.md) | Graded course projects, capstones, certification labs | Your program's rubric and academic integrity policy | Drafting |

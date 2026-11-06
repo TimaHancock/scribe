@@ -29,7 +29,11 @@ capture system in `documentation-playbook/`:
   card, academic additions and runbook procedure come from the first
   ```` ```markdown ```` block in the playbook files, so changing those blocks
   changes new projects; keep the kickoff card's frontmatter keys
-  (`started`, `updated`, `module` placeholders) that it fills in.
+  (`started`, `updated`, `module` placeholders) that it fills in. The coding
+  sub-types (`CodingPython`, `CodingPowerShell`) build `repo\` from
+  `$pythonFiles`/`$powershellFiles` in the script; keep them in step with the
+  trees in `type-modules/coding-project.md`, and keep the skeleton's own tests
+  passing (pytest; Pester under 5.1 and 7; PSScriptAnalyzer clean).
 - `Convert-Log.ps1`: rewrites a plain-format log in the obsidian format.
 
 Scribe runs `New-Project.ps1` and `Convert-Log.ps1` from the tray in a child

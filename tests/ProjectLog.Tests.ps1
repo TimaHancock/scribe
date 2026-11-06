@@ -597,6 +597,13 @@ Describe 'New-DecisionRecord' {
         $text | Should -Match '(?m)^Delete stale app registrations; disabling leaves owners confused\r?$'
         $text | Should -Not -Match 'NNN|YYYY'
     }
+    It "puts a coding project's records in repo\docs\decisions" {
+        $root = (New-Item -ItemType Directory -Force -Path (Join-Path $TestDrive 'dec-code')).FullName
+        New-Item -ItemType Directory -Force -Path (Join-Path $root 'repo\docs\decisions') | Out-Null
+        New-DecisionRecord -Root $root -Decision 'Use the src layout' -When ([datetime]'2026-11-05') |
+            Should -Be (Join-Path $root 'repo\docs\decisions\001-use-the-src-layout.md')
+        Test-Path -LiteralPath (Join-Path $root 'decisions') | Should -BeFalse
+    }
     It 'links a record by name in an obsidian log and by path in a plain one' {
         $root = Join-Path $TestDrive 'dec'
         $rec = Join-Path $root 'decisions\008-x.md'

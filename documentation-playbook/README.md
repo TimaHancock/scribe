@@ -46,6 +46,7 @@ documentation-playbook/
   type-modules/             extra rules per project type
     README.md               how modules work, the spec, the registry
     academic-assessment.md
+    coding-project.md
     it-project.md
     runbook-or-sop.md
     technology-evaluation.md

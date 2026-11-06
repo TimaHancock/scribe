@@ -88,8 +88,9 @@ folder. Switching there switches the active project everywhere.
 The time and the date heading are added for you; see [Log format](#log-format).
 
 **Decisions.** When the entry starts with DECISION, a ticked box offers to
-create a decision record too: `decisions\NNN-<slug>.md`, numbered after the
-last one and filled in from the playbook's
+create a decision record too: `decisions\NNN-<slug>.md` (in a coding project,
+`repo\docs\decisions\`, so it travels with the code), numbered after the last
+one and filled in from the playbook's
 [decision-record template](documentation-playbook/templates/03-decision-record.md).
 The log entry links to it, and the record opens so you can add the context and
 the options you weighed.
@@ -337,6 +338,19 @@ an Obsidian vault and has no `.base` file yet, New-Project.ps1 also copies
 | `TechEval` | Choosing a product, tool or approach |
 | `Academic` | One graded task |
 | `Capstone` | A multi-task capstone, one folder per task |
+| `CodingPython` | A coding project with a Python repository in `repo\` |
+| `CodingPowerShell` | A coding project with a PowerShell module repository in `repo\` |
+
+The two coding modules follow the
+[Coding project module](documentation-playbook/type-modules/coding-project.md):
+a private workspace (kickoff card, log, evidence, drafts) around `repo\`, the
+code's own repository, which holds the README, changelog, CI workflow,
+`docs\decisions\` and a skeleton named after the project. For a project called
+`proxy lab`, that's the `proxy_lab` package (src layout, pytest, a first
+decision record for the layout) or the `ProxyLab` module (manifest,
+`Public\`/`Private\` loader, a Pester test). The skeleton's tests pass as
+created. `repo\` starts as a Git repository when Git is installed, with
+nothing committed. The LICENSE file is a placeholder until you choose one.
 
 | Parameter | Description |
 | --- | --- |

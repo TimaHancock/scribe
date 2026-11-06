@@ -486,7 +486,7 @@ function Show-LogBox {
         }
         # Shown in the hint's place while the entry is a DECISION.
         $recordBox = New-Object System.Windows.Forms.CheckBox -Property @{
-            Text     = 'Also create a decision record (decisions\NNN-slug.md) and open it'
+            Text     = 'Also create a decision record (NNN-slug.md in decisions) and open it'
             Checked  = $true
             TabStop  = $false
             Visible  = $false

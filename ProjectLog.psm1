@@ -795,6 +795,8 @@ function New-DecisionRecord {
         Creates decisions\NNN-<slug>.md from the playbook's decision-record
         template, numbered after the highest record already there, with the
         title, date and decision filled in. Returns the new path.
+        A coding project keeps its records with the code, in
+        repo\docs\decisions, whenever that folder exists.
     #>
     param(
         [Parameter(Mandatory)][string]$Root,
@@ -802,6 +804,8 @@ function New-DecisionRecord {
         [datetime]$When = (Get-Date)
     )
     $dir = Join-Path $Root 'decisions'
+    $inRepo = Join-Path (Join-Path (Join-Path $Root 'repo') 'docs') 'decisions'
+    if (Test-Path -LiteralPath $inRepo -PathType Container) { $dir = $inRepo }
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     $last = 0
     foreach ($f in Get-ChildItem -LiteralPath $dir -File) {
